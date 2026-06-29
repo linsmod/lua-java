@@ -409,45 +409,65 @@ static void subexpr(JLexState *ls, expdesc *v, int limit) {
   BinOpr op;
   simpleexpr(ls, v);
 
-  /* chain .name and .method() access */
-  while (ls->t.token == '.' && (binop_level(ls->t.token) > limit || limit == 0)) {
+  /* chain .name and .method() access (always processed, not a binary op).
+   * Save root's global/static flag BEFORE the chain — once global, always global.
+   * VRELOCABLE with no jumps = GETTABUP deferred global lookup. */
+  int chain_global = (v->k == VRELOCABLE);
+
+  while (ls->t.token == '.') {
     next(ls);
     if (ls->t.token != TK_JAVA_NAME)
       jlex_syntaxerror(ls, "expected identifier after '.'");
     TString *field = ls->t.seminfo.ts;
     next(ls);
 
+    int was_global = chain_global;
+
     luaK_exp2nextreg(ls->fs, v);
     int obj_reg = v->u.info;
     int k = luaK_stringK(ls->fs, field);
 
     if (ls->t.token == '(') {
-      /* Method call: allocate method reg, GETTABLE, setup self, CALL */
+      /* Method call: allocate method reg, GETTABLE, CALL */
       int method_reg = ls->fs->freereg;
       ls->fs->freereg = method_reg + 1;
       luaK_codeABC(ls->fs, OP_GETTABLE, method_reg, obj_reg, k | BITRK);
       next(ls);
-      /* self = object (method_reg + 1) */
-      luaK_codeABC(ls->fs, OP_MOVE, method_reg + 1, obj_reg, 0);
-      /* Reserve space: method, self, arg1, arg2, ...
-       * Ensure argument expressions start at method_reg+2 so they
-       * don't overwrite method or self registers. */
-      if (ls->fs->freereg < method_reg + 2)
-        ls->fs->freereg = method_reg + 2;
-      int nargs = 1;  /* self counts as arg 1 */
+
+      int first_arg_reg;  /* where arguments start */
+      int nargs;          /* argument count (not including self) */
+
+      if (was_global) {
+        /* Static call (ClassName.method()): no self, args start at method_reg+1 */
+        first_arg_reg = method_reg + 1;
+        nargs = 0;
+      } else {
+        /* Instance call (obj.method()): self = obj at method_reg+1, args at method_reg+2 */
+        luaK_codeABC(ls->fs, OP_MOVE, method_reg + 1, obj_reg, 0);
+        first_arg_reg = method_reg + 2;
+        nargs = 1;  /* self counts as arg */
+      }
+
+      /* Ensure freereg accounts for used registers */
+      if (ls->fs->freereg < first_arg_reg)
+        ls->fs->freereg = first_arg_reg;
+
       if (ls->t.token != ')') {
         expdesc arg;
         expr(ls, &arg);
-        exp2reg(ls->fs, &arg, method_reg + 2);
+        exp2reg(ls->fs, &arg, first_arg_reg);
         nargs++;
         while (ls->t.token == ',') {
           next(ls);
           expr(ls, &arg);
-          exp2reg(ls->fs, &arg, method_reg + nargs + 1);
+          /* first_arg_reg already skips self, so nargs (which includes self)
+           * would double-count. Use method_reg+1+nargs for correct position. */
+          exp2reg(ls->fs, &arg, method_reg + 1 + nargs);
           nargs++;
         }
       }
       check(ls, ')'); next(ls);
+      /* nargs+1: CALL's B field encodes nargs as B-1, so B = nargs+1 */
       luaK_codeABC(ls->fs, OP_CALL, method_reg, nargs + 1, 2);
       ls->fs->freereg = method_reg;
       init_exp(v, VCALL, ls->fs->pc - 1);
@@ -1200,8 +1220,26 @@ static void statement(JLexState *ls) {
        * Keep lookahead, fall through to expr_statement. */
       /* fall through to switch below */
     } else if (la == TK_JAVA_NAME) {
-      /* "Name Name" → likely type + variable name. var_declaration. */
-      var_declaration(ls);
+      /* "Name Name" → type + variable name.
+       * next() returns lookahead (second name), losing the first.
+       * Save the first name (type, unused for now) and treat the second
+       * as the variable name. */
+      next(ls);  /* returns lookahead → ls->t = second name (variable) */
+      TString *vname = ls->t.seminfo.ts;
+      next(ls);  /* consume variable name */
+      while (ls->t.token == '[') { next(ls); check(ls, ']'); next(ls); }
+      int reg;
+      if (ls->t.token == '=') {
+        next(ls);
+        reg = new_localvar(ls->fs, vname);
+        expdesc v;
+        expr(ls, &v);
+        exp2reg(ls->fs, &v, reg);
+      } else {
+        reg = new_localvar(ls->fs, vname);
+        luaK_nil(ls->fs, reg, 1);
+      }
+      skip_semicolon(ls);
       return;
     }
     /* For other la values (=, ;, +, etc.), it's an expression.
@@ -1832,13 +1870,94 @@ static void javamain(JLexState *ls, FuncState *fs) {
     if (ls->t.token == ';') next(ls);
   }
 
-  /* skip import statements */
+  /* process import statements: generate require() calls */
   while (ls->t.token == TK_JAVA_IMPORT) {
-    next(ls);
-    if (ls->t.token == TK_JAVA_STATIC) next(ls);
-    while (ls->t.token == TK_JAVA_NAME || ls->t.token == '.') next(ls);
-    if (ls->t.token == '*') next(ls);
+    next(ls);  /* skip 'import' */
+    int is_static = 0;
+    if (ls->t.token == TK_JAVA_STATIC) { is_static = 1; next(ls); }
+
+    /* Collect full qualified name: java.util.ArrayList */
+    char full_path[256];
+    int path_len = 0;
+    while ((ls->t.token == TK_JAVA_NAME || ls->t.token == '.')
+           && path_len < 250) {
+      if (ls->t.token == '.') {
+        full_path[path_len++] = '.';
+      } else {
+        const char *s = getstr(ls->t.seminfo.ts);
+        size_t slen = strlen(s);
+        if (path_len + (int)slen >= 250) break;
+        memcpy(full_path + path_len, s, slen);
+        path_len += (int)slen;
+      }
+      next(ls);
+    }
+    full_path[path_len] = '\0';
+
+    int is_wildcard = (ls->t.token == '*');
+    if (is_wildcard) { next(ls); /* skip '*' */ }
+
     if (ls->t.token == ';') next(ls);
+
+    /* Skip static imports and empty paths */
+    if (is_static || path_len == 0) continue;
+
+    if (is_wildcard) {
+      /* Wildcard import: generate _j_import_wildcard("pkg")
+       * Bytecode:
+       *   GETTABUP  reg, 0, "_j_import_wildcard"
+       *   LOADK     reg+1, "pkg"
+       *   CALL      reg, 2, 1
+       */
+      int reg = fs->freereg;
+      fs->freereg = reg + 2;
+      TString *ts_fn = luaS_newliteral(ls->L, "_j_import_wildcard");
+      int k_fn = luaK_stringK(fs, ts_fn);
+      luaK_codeABC(fs, OP_GETTABUP, reg, 0, k_fn | BITRK);
+      TString *ts_pkg = luaS_newlstr(ls->L, full_path, (size_t)path_len);
+      int k_pkg = luaK_stringK(fs, ts_pkg);
+      luaK_codeABx(fs, OP_LOADK, reg + 1, k_pkg);
+      luaK_codeABC(fs, OP_CALL, reg, 2, 2);
+      continue;
+    }
+
+    /* Generate: _ENV[shortName] = require("full.path")
+     * Bytecode:
+     *   GETTABUP  reg, 0, "require"
+     *   LOADK     reg+1, "full.path"
+     *   CALL      reg, 1, 1
+     *   SETTABUP  0, "shortName", reg
+     */
+    /* Extract short class name (last component after last '.') */
+    char *short_name = full_path;
+    for (int i = path_len - 1; i >= 0; i--) {
+      if (full_path[i] == '.') { short_name = full_path + i + 1; break; }
+    }
+    size_t short_len = strlen(short_name);
+    if (short_len == 0) continue;
+
+    int reg = fs->freereg;
+    fs->freereg = reg + 2;  /* we use reg and reg+1 */
+
+    /* GETTABUP reg, _ENV(0), "require" */
+    TString *ts_req = luaS_newliteral(ls->L, "require");
+    int k_req = luaK_stringK(fs, ts_req);
+    luaK_codeABC(fs, OP_GETTABUP, reg, 0, k_req | BITRK);
+
+    /* LOADK reg+1, full_path  (iABx format, no BITRK) */
+    TString *ts_path = luaS_newlstr(ls->L, full_path, (size_t)path_len);
+    int k_path = luaK_stringK(fs, ts_path);
+    luaK_codeABx(fs, OP_LOADK, reg + 1, k_path);
+
+    /* CALL reg, 2, 2  →  reg = require(full_path)  (nargs=1, nrets=1) */
+    luaK_codeABC(fs, OP_CALL, reg, 2, 2);
+
+    /* SETTABUP _ENV(0), shortName, reg */
+    TString *ts_name = luaS_newlstr(ls->L, short_name, short_len);
+    int k_name = luaK_stringK(fs, ts_name);
+    luaK_codeABC(fs, OP_SETTABUP, 0, k_name | BITRK, reg);
+
+    fs->freereg = reg;  /* release temporaries */
   }
 
   /* parse compilation unit: class definitions */
