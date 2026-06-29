@@ -53,6 +53,9 @@ LUAI_FUNC void jlex_init    (lua_State *L);
 LUAI_FUNC void java_openlib (lua_State *L);
 }
 
+/* ---- java_main: Lua function (not C!) so debug hook can yield safely ---- */
+/* Loaded at init via luaL_dostring (see main()) */
+
 /* ============================================================
  *  Debugger state
  * ============================================================ */
@@ -123,6 +126,16 @@ static const void *g_bytecode_proto = nullptr;
 static int         g_bytecode_curpc = -1;
 static const void *g_bytecode_ci    = nullptr;  /* to validate cache validity */
 
+/* Registers cache — captured once on pause */
+struct RegisterEntry {
+    int         index;
+    std::string type;
+    std::string value;
+    bool        is_top;     /* R(top) marker */
+    bool        is_params;  /* parameter registers R0..R(params-1) */
+};
+static std::vector<RegisterEntry> g_registers_cache;
+
 /* Loaded source file cache: filename → vector of lines */
 static std::map<std::string, std::vector<std::string>> g_sources;
 
@@ -145,6 +158,7 @@ static bool g_show_source     = true;
 static bool g_show_bytecode   = true;
 static bool g_show_callstack  = true;
 static bool g_show_locals     = true;
+static bool g_show_registers  = true;
 static bool g_show_console    = true;
 static bool g_show_breakpoints = true;
 
@@ -210,6 +224,22 @@ static void console_add(const char *s, ImVec4 color = ImVec4(1,1,1,1)) {
     cl.text  = s ? s : "";
     cl.color = color;
     g_console.push_back(cl);
+
+    /* Also print to stdout for terminal visibility */
+    const char *text = s ? s : "";
+    if (color.x > 0.9f && color.y < 0.4f && color.z < 0.4f) {
+        /* Red-ish = error */
+        fprintf(stdout, "[ERROR] %s\n", text);
+    } else if (color.x > 0.9f && color.y > 0.7f && color.z < 0.4f) {
+        /* Orange/Yellow = warning */
+        fprintf(stdout, "[WARN]  %s\n", text);
+    } else if (color.x < 0.6f && color.y > 0.7f && color.z > 0.9f) {
+        /* Blue-ish = info */
+        fprintf(stdout, "[INFO]  %s\n", text);
+    } else {
+        fprintf(stdout, "%s\n", text);
+    }
+    fflush(stdout);
 }
 
 /* Redirect Lua print() to our console */
@@ -370,6 +400,94 @@ static void snapshot_bytecode(lua_State *L) {
     g_bytecode_curpc = curpc;
 }
 
+/* ---- Helper: format a raw TValue into a display string ---- */
+static std::string tvalue_tostring(const TValue *o) {
+    char buf[256];
+    if (ttisnil(o)) {
+        return "nil";
+    } else if (ttisboolean(o)) {
+        return bvalue(o) ? "true" : "false";
+    } else if (ttisinteger(o)) {
+        snprintf(buf, sizeof(buf), "%lld", (long long)ivalue(o));
+        return buf;
+    } else if (ttisfloat(o)) {
+        snprintf(buf, sizeof(buf), "%.14g", fltvalue(o));
+        return buf;
+    } else if (ttisstring(o)) {
+        const char *s = getstr(tsvalue(o));
+        size_t len = tsslen(tsvalue(o));
+        if (len > 80) {
+            snprintf(buf, sizeof(buf), "\"%.80s...\"", s);
+        } else {
+            snprintf(buf, sizeof(buf), "\"%s\"", s);
+        }
+        return buf;
+    } else if (ttistable(o)) {
+        snprintf(buf, sizeof(buf), "table(%p)", (void *)hvalue(o));
+        return buf;
+    } else if (ttisLclosure(o)) {
+        snprintf(buf, sizeof(buf), "function(%p)", (void *)clLvalue(o));
+        return buf;
+    } else if (ttisCclosure(o)) {
+        snprintf(buf, sizeof(buf), "C-function(%p)", (void *)clCvalue(o));
+        return buf;
+    } else if (ttislcf(o)) {
+        snprintf(buf, sizeof(buf), "C-function(%p)", (void *)fvalue(o));
+        return buf;
+    } else if (ttisfulluserdata(o)) {
+        snprintf(buf, sizeof(buf), "userdata(%p)", uvalue(o));
+        return buf;
+    } else if (ttislightuserdata(o)) {
+        snprintf(buf, sizeof(buf), "lightuserdata(%p)", pvalue(o));
+        return buf;
+    } else if (ttisthread(o)) {
+        snprintf(buf, sizeof(buf), "thread(%p)", (void *)thvalue(o));
+        return buf;
+    } else {
+        snprintf(buf, sizeof(buf), "type:%d", rttype(o));
+        return buf;
+    }
+}
+
+static const char *tvalue_typename(const TValue *o) {
+    if (ttisnil(o))           return "nil";
+    if (ttisboolean(o))       return "boolean";
+    if (ttisinteger(o))       return "integer";
+    if (ttisfloat(o))         return "number";
+    if (ttisstring(o))        return "string";
+    if (ttistable(o))         return "table";
+    if (ttisLclosure(o))      return "function";
+    if (ttisCclosure(o))      return "C-func";
+    if (ttislcf(o))           return "C-func";
+    if (ttisfulluserdata(o))  return "userdata";
+    if (ttislightuserdata(o)) return "lightud";
+    if (ttisthread(o))        return "thread";
+    return "???";
+}
+
+static void snapshot_registers(lua_State *L) {
+    g_registers_cache.clear();
+
+    if (!L->ci || !isLua(L->ci)) return;
+
+    CallInfo *ci = L->ci;
+    LClosure *cl = clLvalue(ci->func);
+    const Proto *p = cl->p;
+    StkId base = ci->u.l.base;
+    int nregs = p->maxstacksize;
+
+    for (int i = 0; i < nregs; i++) {
+        TValue *reg = &base[i];
+        RegisterEntry e;
+        e.index     = i;
+        e.type      = tvalue_typename(reg);
+        e.value     = tvalue_tostring(reg);
+        e.is_top    = (reg == L->top);
+        e.is_params = (i < p->numparams);
+        g_registers_cache.push_back(e);
+    }
+}
+
 /* ============================================================
  *  Lua debug hook – called on every source line
  * ============================================================ */
@@ -461,6 +579,7 @@ static void debug_hook(lua_State *L, lua_Debug *ar) {
         snapshot_locals(L, ar);
         snapshot_callstack(L);
         snapshot_bytecode(L);
+        snapshot_registers(L);
         lua_yield(L, 0);
     }
 }
@@ -550,12 +669,41 @@ static bool dbg_tick() {
     int status = lua_resume(g_co, g_mainL, 0);
 
     switch (status) {
-    case LUA_OK:
+    case LUA_OK: {
         /* Coroutine finished normally */
         g_dbg_state = DBG_IDLE;
         console_add("--- Script finished ---", ImVec4(0.5f, 0.8f, 1.0f, 1.0f));
         lua_sethook(g_co, nullptr, 0, 0);
+
+        /* lua_resume may have left return value on g_mainL stack — discard it */
+        int top_before = lua_gettop(g_mainL);
+
+        /* For Lua scripts: auto-call global main() if present.
+         * For Java scripts: java_main() was already called inside the bytecode
+         * (before RETURN), so no extra work needed here. */
+        lua_getglobal(g_mainL, "main");
+        if (lua_isfunction(g_mainL, -1)) {
+            console_add("Calling main()...",
+                        ImVec4(0.5f, 0.8f, 1.0f, 1.0f));
+            if (lua_pcall(g_mainL, 0, 0, 0) == LUA_OK) {
+                /* OK */
+            } else {
+                const char *err = lua_tostring(g_mainL, -1);
+                console_add(err ? err : "Unknown error",
+                            ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+                luaL_traceback(g_mainL, g_mainL, err ? err : "error", 1);
+                console_add(lua_tostring(g_mainL, -1),
+                            ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+                lua_pop(g_mainL, 2);
+            }
+        } else {
+            lua_pop(g_mainL, 1);  /* pop nil */
+        }
+
+        /* Restore stack to pre-call level (discard lua_resume return value) */
+        lua_settop(g_mainL, top_before);
         return false;
+    }
 
     case LUA_YIELD:
         /* Coroutine yielded (paused at breakpoint/step) */
@@ -568,6 +716,11 @@ static bool dbg_tick() {
         const char *msg = lua_tostring(g_co, -1);
         console_add(msg ? msg : "Unknown error",
                     ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+        /* print traceback */
+        luaL_traceback(g_co, g_co, msg ? msg : "error", 1);
+        console_add(lua_tostring(g_co, -1),
+                    ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+        lua_pop(g_co, 1);
         g_dbg_state = DBG_IDLE;
         lua_sethook(g_co, nullptr, 0, 0);
         return false;
@@ -639,6 +792,7 @@ static void dbg_stop() {
     g_bytecode_proto = nullptr;
     g_bytecode_curpc = -1;
     g_bytecode_ci    = nullptr;
+    g_registers_cache.clear();
     g_cur_source.clear();
     g_cur_line = -1;
     console_add("--- Execution stopped ---", ImVec4(1.0f, 0.5f, 0.3f, 1.0f));
@@ -994,6 +1148,73 @@ static void draw_locals() {
 }
 
 /* ============================================================
+ *  UI: Registers  (reads from cache — never touches g_co)
+ * ============================================================ */
+static void draw_registers() {
+    ImGui::Begin("Registers");
+
+    if (!g_co || g_dbg_state != DBG_PAUSED) {
+        ImGui::TextDisabled("(not paused)");
+        ImGui::End();
+        return;
+    }
+
+    if (g_registers_cache.empty()) {
+        ImGui::TextDisabled("No register data available.");
+        ImGui::End();
+        return;
+    }
+
+    /* Header */
+    ImGui::Columns(4, "regs_cols", true);
+    ImGui::SetColumnWidth(0, 50);
+    ImGui::SetColumnWidth(1, 70);
+    float col2_w = ImGui::GetContentRegionAvail().x - 170;
+    if (col2_w < 100) col2_w = 100;
+    ImGui::SetColumnWidth(2, col2_w);
+    ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "Reg");
+    ImGui::NextColumn();
+    ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "Type");
+    ImGui::NextColumn();
+    ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "Value");
+    ImGui::NextColumn();
+    ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "Note");
+    ImGui::NextColumn();
+    ImGui::Separator();
+
+    for (auto &e : g_registers_cache) {
+        char regname[16];
+        snprintf(regname, sizeof(regname), "R%d", e.index);
+
+        /* Highlight top-of-stack */
+        ImVec4 color = ImVec4(1, 1, 1, 1);
+        if (e.is_top) color = ImVec4(1.0f, 0.75f, 0.25f, 1.0f);  /* gold */
+
+        ImGui::TextColored(color, "%s", regname);
+        ImGui::NextColumn();
+        ImGui::TextColored(color, "%s", e.type.c_str());
+        ImGui::NextColumn();
+        ImGui::TextColored(color, "%s", e.value.c_str());
+        ImGui::NextColumn();
+
+        /* Note column */
+        if (e.is_top && e.is_params)
+            ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.3f, 1.0f), "top|param");
+        else if (e.is_top)
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f), "top");
+        else if (e.is_params)
+            ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f), "param");
+        else
+            ImGui::TextUnformatted("");
+
+        ImGui::NextColumn();
+    }
+
+    ImGui::Columns(1);
+    ImGui::End();
+}
+
+/* ============================================================
  *  UI: Console
  * ============================================================ */
 static void draw_console() {
@@ -1177,6 +1398,7 @@ static void draw_main_menu() {
             ImGui::MenuItem("Bytecode",      nullptr, &g_show_bytecode);
             ImGui::MenuItem("Call Stack",    nullptr, &g_show_callstack);
             ImGui::MenuItem("Locals",        nullptr, &g_show_locals);
+            ImGui::MenuItem("Registers",     nullptr, &g_show_registers);
             ImGui::MenuItem("Console",       nullptr, &g_show_console);
             ImGui::MenuItem("Breakpoints",   nullptr, &g_show_breakpoints);
             ImGui::EndMenu();
@@ -1546,7 +1768,29 @@ int main(int argc, char *argv[]) {
     luaL_openlibs(g_mainL);
     jlex_init(g_mainL);
     java_openlib(g_mainL);
+    /* java_main as Lua function (not C!) so debug hook can yield inside main() */
+    if (luaL_dostring(g_mainL,
+        "java_main = function()\n"
+        "  local argc = argc or 0\n"
+        "  local argv = argv\n"
+        "  for k, v in pairs(_ENV) do\n"
+        "    if type(v) == 'table' and type(v.main) == 'function' then\n"
+        "      v.main(argc, argv)\n"
+        "      return\n"
+        "    end\n"
+        "  end\n"
+        "end\n") != LUA_OK) {
+        fprintf(stderr, "Failed to load java_main: %s\n",
+                lua_tostring(g_mainL, -1));
+        lua_pop(g_mainL, 1);
+    }
     lua_gc(g_mainL, LUA_GCSTOP, 0);  /* stop GC for debugging stability */
+
+    /* Set default argc/argv globals (can be changed via console) */
+    lua_pushinteger(g_mainL, 0);
+    lua_setglobal(g_mainL, "argc");
+    lua_pushlightuserdata(g_mainL, nullptr);
+    lua_setglobal(g_mainL, "argv");
 
     /* Load persisted config (recent files, break-on-main, breakpoints) */
     config_load();
@@ -1570,6 +1814,15 @@ int main(int argc, char *argv[]) {
             buf[i] = (s[i] >= 'a' && s[i] <= 'z') ? s[i] - 32 : s[i];
         buf[len] = '\0';
         lua_pushstring(L, buf);
+        return 1;
+    });
+
+    /* _setmetatable: needed by constructor to assign __index → class table */
+    lua_register(g_mainL, "_setmetatable", [](lua_State *L) -> int {
+        luaL_checktype(L, 1, LUA_TTABLE);
+        luaL_checktype(L, 2, LUA_TTABLE);
+        lua_setmetatable(L, 1);
+        lua_settop(L, 1);
         return 1;
     });
 
@@ -1684,8 +1937,16 @@ int main(int argc, char *argv[]) {
         if (g_show_locals) {
             ImGui::SetNextWindowPos(ImVec2(640, 260 + TOP_Y - 50),
                                     ImGuiCond_FirstUseEver);
-            ImGui::SetNextWindowSize(ImVec2(300, 290), ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowSize(ImVec2(300, 155), ImGuiCond_FirstUseEver);
             draw_locals();
+        }
+
+        /* Registers below locals */
+        if (g_show_registers) {
+            ImGui::SetNextWindowPos(ImVec2(640, 420 + TOP_Y - 50),
+                                    ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowSize(ImVec2(300, 135), ImGuiCond_FirstUseEver);
+            draw_registers();
         }
 
         /* Bytecode on the right */

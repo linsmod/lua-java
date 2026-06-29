@@ -15,6 +15,9 @@
 LUAI_FUNC void jlex_init    (lua_State *L);
 LUAI_FUNC void java_openlib (lua_State *L);
 
+/* ---- java_main: Lua function (not C!) so debug hook can yield safely ---- */
+/* Loaded at init via luaL_dostring (see main()) */
+
 /* ============================================================
  * 1. Expose C functions to Lua
  * ============================================================ */
@@ -235,22 +238,6 @@ static int run_java_file(lua_State *L, const char *filename) {
     }
     printf("\n");
 
-    /* ---- invoke main() if it exists ---- */
-    lua_getfield(L, -1, "main");
-    if (lua_isfunction(L, -1)) {
-        printf("Calling main()...\n");
-        if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
-            fprintf(stderr, "main() error: %s\n", lua_tostring(L, -1));
-            /* traceback */
-            luaL_traceback(L, L, NULL, 1);
-            fprintf(stderr, "%s\n", lua_tostring(L, -1));
-            lua_pop(L, 3);  /* error msg + traceback + class table */
-            return 0;
-        }
-    } else {
-        lua_pop(L, 1);  /* nil */
-    }
-
     lua_pop(L, 1); /* pop class table */
     return 1;
 }
@@ -292,10 +279,32 @@ int main(int argc, char *argv[]) {
     luaL_openlibs(L);
     jlex_init(L);     /* register Java reserved words */
     java_openlib(L);  /* register System.out, primitive types */
+    /* java_main as Lua function (not C!) so debug hook can yield inside main() */
+    if (luaL_dostring(L,
+        "java_main = function()\n"
+        "  local argc = argc or 0\n"
+        "  local argv = argv\n"
+        "  for k, v in pairs(_ENV) do\n"
+        "    if type(v) == 'table' and type(v.main) == 'function' then\n"
+        "      v.main(argc, argv)\n"
+        "      return\n"
+        "    end\n"
+        "  end\n"
+        "end\n") != LUA_OK) {
+        fprintf(stderr, "Failed to load java_main: %s\n",
+                lua_tostring(L, -1));
+        lua_pop(L, 1);
+    }
     lua_gc(L, LUA_GCSTOP, 0);  /* DEBUG: stop GC to check for GC corruption */
 
     printf("=== Lua + Java Test ===\n");
     printf("Lua version: %s\n\n", LUA_RELEASE);
+
+    /* Set argc/argv globals for java_main to read at runtime */
+    lua_pushinteger(L, argc);
+    lua_setglobal(L, "argc");
+    lua_pushlightuserdata(L, argv);
+    lua_setglobal(L, "argv");
 
     lua_register(L, "c_add",        c_add);
     lua_register(L, "c_uppercase",  c_uppercase);

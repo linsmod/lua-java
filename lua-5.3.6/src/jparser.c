@@ -1945,6 +1945,19 @@ static void class_definition(JLexState *ls, FuncState *fs) {
     ls->fs->freereg = ctor_reg_val; /* release closure register */
   }
 
+  /* Call java_main() if registered (auto-invoke main with runtime argc/argv) */
+  {
+    int jm_reg = fs->freereg;
+    int jm_k = luaK_stringK(fs, luaS_newliteral(ls->L, "java_main"));
+    luaK_codeABC(fs, OP_GETTABUP, jm_reg, 0, jm_k | BITRK);
+    fs->freereg = jm_reg + 1;
+    luaK_codeABC(fs, OP_TEST, jm_reg, 0, 0);   /* skip 1 instr if nil */
+    int jmp_skip = luaK_jump(fs);                /* JMP -> after CALL (reached when nil) */
+    luaK_codeABC(fs, OP_CALL, jm_reg, 1, 1);    /* java_main() (reached when truthy) */
+    luaK_patchtohere(fs, jmp_skip);
+    fs->freereg = jm_reg;  /* release temp register */
+  }
+
   /* return the class table */
   luaK_ret(fs, class_reg, 1);
 }
