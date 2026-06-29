@@ -504,12 +504,12 @@ static void subexpr(JLexState *ls, expdesc *v, int limit) {
       init_exp(v, VCALL, ls->fs->pc - 1);
     } else if (getstr(field)[0] == 'l'
                && strcmp(getstr(field), "length") == 0) {
-      /* .length on an array/table: emit OP_LEN (# operator).
-       * Varargs and array initializers produce Lua tables, and
-       * Java .length maps to Lua's # length operator. */
+      /* .length on an array/table: read the "length" field.
+       * Tables store an explicit length field for 0-based arrays. */
       int len_reg = ls->fs->freereg;
       ls->fs->freereg = len_reg + 1;
-      luaK_codeABC(ls->fs, OP_LEN, len_reg, obj_reg, 0);
+      int kl = luaK_stringK(ls->fs, field);
+      luaK_codeABC(ls->fs, OP_GETTABLE, len_reg, obj_reg, kl | BITRK);
       init_exp(v, VNONRELOC, len_reg);
     } else {
       /* Field access: use VINDEXED so expression reading emits GETTABLE
@@ -561,7 +561,7 @@ static void subexpr(JLexState *ls, expdesc *v, int limit) {
 
   /* Array / table indexing: arr[index]
    * E.g. arr[i], table[key]
-   * Arrays are stored Lua 1-based, so Java 0-based index needs +1.
+   * Arrays are stored Lua 0-based (matching Java convention).
    *
    * Uses VINDEXED to keep table register and index register cleanly
    * separated.  For reads, luaK_dischargevars emits GETTABLE into
@@ -578,13 +578,10 @@ static void subexpr(JLexState *ls, expdesc *v, int limit) {
       luaK_exp2nextreg(ls->fs, v);
     int tbl_reg = v->u.info;
 
-    /* Put index into a register (after tbl_reg), then add 1 for Lua 1-based */
+    /* Put index into a register (after tbl_reg). 0-based, no offset needed. */
     int idx_reg = ls->fs->freereg;
     if (idx_reg <= tbl_reg) idx_reg = tbl_reg + 1;
     exp2reg(ls->fs, &idx, idx_reg);
-    /* Convert Java 0-based → Lua 1-based: idx_reg += 1 */
-    int k1 = luaK_intK(ls->fs, 1);
-    luaK_codeABC(ls->fs, OP_ADD, idx_reg, idx_reg, k1 | BITRK);
     ls->fs->freereg = idx_reg + 1;
 
     /* Create VINDEXED: preserves table register and index register
@@ -1590,9 +1587,16 @@ static int method_definition(JLexState *ls, FuncState *fs, int class_reg,
     luaK_codeABC(ls->fs, OP_NEWTABLE, pack_reg, 0, 0);
     luaK_codeABC(ls->fs, OP_VARARG, pack_reg + 1, 0, 0);
     luaK_codeABC(ls->fs, OP_SETLIST, pack_reg, 0, 1);
+    /* store table["length"] = #table (for 0-based array length access) */
+    {
+      int len_reg = pack_reg + 2;
+      luaK_codeABC(ls->fs, OP_LEN, len_reg, pack_reg, 0);
+      int kl = luaK_stringK(ls->fs, luaS_newliteral(ls->L, "length"));
+      luaK_codeABC(ls->fs, OP_SETTABLE, pack_reg, kl | BITRK, len_reg);
+    }
     new_localvar(ls->fs, vararg_name);
-    if (ls->fs->freereg < pack_reg + 2)
-      ls->fs->freereg = pack_reg + 2;
+    if (ls->fs->freereg < pack_reg + 3)
+      ls->fs->freereg = pack_reg + 3;
   }
 
   /* parse body or skip abstract/native */

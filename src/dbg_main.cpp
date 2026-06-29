@@ -25,6 +25,7 @@
 #include <string>
 #include <vector>
 #include <set>
+#include <unordered_set>
 #include <map>
 #include <algorithm>
 #include <deque>
@@ -106,9 +107,22 @@ static int         g_cur_line = -1;
 
 /* Locals/upvalues cache — captured once on pause, never queried from
  * the yielded coroutine on subsequent frames (avoids stack corruption). */
+struct TableChild {
+    std::string key;        /* display key string */
+    std::string key_type;   /* "integer", "string", etc. */
+    std::string value;      /* display value string */
+    std::string value_type; /* "integer", "string", "table", etc. */
+    const void *table_ptr;  /* non-null if value is itself a table */
+    bool        expanded;
+    std::vector<TableChild> children;
+};
+
 struct LocalEntry {
     std::string name;
     std::string value;
+    const void *table_ptr;          /* non-null if value is a table */
+    bool        table_expanded;
+    std::vector<TableChild> table_children;
 };
 static std::vector<LocalEntry> g_locals_cache;
 static std::vector<LocalEntry> g_upvals_cache;
@@ -133,6 +147,9 @@ struct RegisterEntry {
     std::string value;
     bool        is_top;     /* R(top) marker */
     bool        is_params;  /* parameter registers R0..R(params-1) */
+    const void *table_ptr;          /* non-null if value is a table */
+    bool        table_expanded;
+    std::vector<TableChild> table_children;
 };
 static std::vector<RegisterEntry> g_registers_cache;
 
@@ -336,9 +353,10 @@ static const char *lua_val_tostring(lua_State *L, int idx, char *buf, size_t buf
         else
             snprintf(buf, bufsz, "function(%p)", lua_topointer(L, idx));
         return buf;
-    case LUA_TUSERDATA:   snprintf(buf, bufsz, "userdata(%p)", lua_topointer(L, idx)); return buf;
-    case LUA_TTHREAD:     snprintf(buf, bufsz, "thread(%p)", lua_topointer(L, idx)); return buf;
-    default:              snprintf(buf, bufsz, "type:%d", t); return buf;
+    case LUA_TUSERDATA:       snprintf(buf, bufsz, "userdata(%p)", lua_topointer(L, idx)); return buf;
+    case LUA_TLIGHTUSERDATA:  snprintf(buf, bufsz, "lightuserdata(%p)", lua_topointer(L, idx)); return buf;
+    case LUA_TTHREAD:         snprintf(buf, bufsz, "thread(%p)", lua_topointer(L, idx)); return buf;
+    default:                  snprintf(buf, bufsz, "type:%d", t); return buf;
     }
 }
 
@@ -353,7 +371,12 @@ static void snapshot_locals(lua_State *L, lua_Debug *ar) {
         const char *name = lua_getlocal(L, ar, i);
         if (!name) break;
         const char *val = lua_val_tostring(L, -1, valbuf, sizeof(valbuf));
-        g_locals_cache.push_back({name, val});
+        LocalEntry e;
+        e.name            = name;
+        e.value           = val;
+        e.table_ptr       = (lua_type(L, -1) == LUA_TTABLE) ? lua_topointer(L, -1) : nullptr;
+        e.table_expanded  = false;
+        g_locals_cache.push_back(e);
         lua_pop(L, 1);
     }
 
@@ -364,7 +387,12 @@ static void snapshot_locals(lua_State *L, lua_Debug *ar) {
         const char *name = lua_getupvalue(L, func_idx, i);
         if (!name) break;
         const char *val = lua_val_tostring(L, -1, valbuf, sizeof(valbuf));
-        g_upvals_cache.push_back({name, val});
+        LocalEntry e;
+        e.name            = name;
+        e.value           = val;
+        e.table_ptr       = (lua_type(L, -1) == LUA_TTABLE) ? lua_topointer(L, -1) : nullptr;
+        e.table_expanded  = false;
+        g_upvals_cache.push_back(e);
         lua_pop(L, 1);
     }
     lua_pop(L, 1);  /* pop function */
@@ -465,25 +493,129 @@ static const char *tvalue_typename(const TValue *o) {
     return "???";
 }
 
+/* ---- table expansion helpers (direct memory read — GC is stopped during pause) ---- */
+static const int MAX_TABLE_ENTRIES = 128;
+static const int MAX_TABLE_DEPTH   = 3;
+
+/* forward-declare for recursion */
+static void read_table_entries(const void *tptr, std::vector<TableChild> &out,
+                                std::unordered_set<const void*> &visited,
+                                int depth);
+static void expand_table_child(TableChild &child, int depth);
+
+static void read_table_entries(const void *tptr, std::vector<TableChild> &out,
+                                std::unordered_set<const void*> &visited,
+                                int depth) {
+    const Table *t = (const Table*)tptr;
+    if (!t || depth <= 0) return;
+    if (visited.count(tptr)) return;
+    visited.insert(tptr);
+
+    int count = 0;
+
+    /* ---- array part: indices 1..sizearray ---- */
+    for (unsigned int i = 0; i < t->sizearray && count < MAX_TABLE_ENTRIES; i++) {
+        TValue *v = &t->array[i];
+        if (ttisnil(v)) continue;
+
+        TableChild ch;
+        char kbuf[32];
+        snprintf(kbuf, sizeof(kbuf), "%u", i + 1);
+        ch.key        = kbuf;
+        ch.key_type   = "integer";
+        ch.value_type = tvalue_typename(v);
+        ch.value      = tvalue_tostring(v);
+        ch.table_ptr  = ttistable(v) ? (const void*)hvalue(v) : nullptr;
+        ch.expanded   = false;
+        out.push_back(ch);
+        count++;
+    }
+
+    /* ---- hash part ---- */
+    int node_count = 1 << (int)t->lsizenode;
+    for (int i = 0; i < node_count && count < MAX_TABLE_ENTRIES; i++) {
+        Node *n = (Node*)&t->node[i];
+        TValue *k = &n->i_key.tvk;
+        if (ttisnil(k)) continue;  /* free slot */
+
+        TableChild ch;
+        ch.key_type = tvalue_typename(k);
+
+        if (ttisinteger(k)) {
+            char kbuf[32];
+            snprintf(kbuf, sizeof(kbuf), "%lld", (long long)ivalue(k));
+            ch.key = kbuf;
+        } else if (ttisstring(k)) {
+            const char *s = getstr(tsvalue(k));
+            size_t slen = tsslen(tsvalue(k));
+            if (slen > 40) {
+                char kbuf[64];
+                snprintf(kbuf, sizeof(kbuf), "\"%.40s...\"", s);
+                ch.key = kbuf;
+            } else {
+                ch.key = "\"";
+                ch.key += s;
+                ch.key += "\"";
+            }
+        } else {
+            ch.key = "[" + tvalue_tostring(k) + "]";
+        }
+
+        TValue *v = &n->i_val;
+        ch.value_type = tvalue_typename(v);
+        ch.value      = tvalue_tostring(v);
+        ch.table_ptr  = ttistable(v) ? (const void*)hvalue(v) : nullptr;
+        ch.expanded   = false;
+        out.push_back(ch);
+        count++;
+    }
+}
+
+static void expand_table_child(TableChild &child, int depth) {
+    if (!child.table_ptr || !child.children.empty()) return;
+    std::unordered_set<const void*> visited;
+    read_table_entries(child.table_ptr, child.children, visited, depth);
+}
+
+static void expand_entry(void *tptr, std::vector<TableChild> &children, int depth) {
+    if (!tptr || !children.empty()) return;
+    std::unordered_set<const void*> visited;
+    read_table_entries(tptr, children, visited, depth);
+}
+
 static void snapshot_registers(lua_State *L) {
     g_registers_cache.clear();
 
-    if (!L->ci || !isLua(L->ci)) return;
-
     CallInfo *ci = L->ci;
+    if (!ci) return;
+    if (!isLua(ci)) {
+        /* When ci is not a Lua frame (e.g. C call or yield boundary),
+         * try the next ci down the chain — the hook may fire while
+         * the topmost ci is a C frame wrapping the actual Lua function. */
+        ci = ci->previous;
+        if (!ci || !isLua(ci)) return;
+    }
     LClosure *cl = clLvalue(ci->func);
     const Proto *p = cl->p;
     StkId base = ci->u.l.base;
+
+    /* Use top-base as the real register count when maxstacksize
+     * is too small (Java-compiled functions often have maxstacksize=0
+     * because the compiler resets freereg at function end). */
     int nregs = p->maxstacksize;
+    int top_nregs = (int)(L->top - base);
+    if (top_nregs > nregs) nregs = top_nregs;
 
     for (int i = 0; i < nregs; i++) {
         TValue *reg = &base[i];
         RegisterEntry e;
-        e.index     = i;
-        e.type      = tvalue_typename(reg);
-        e.value     = tvalue_tostring(reg);
-        e.is_top    = (reg == L->top);
-        e.is_params = (i < p->numparams);
+        e.index          = i;
+        e.type           = tvalue_typename(reg);
+        e.value          = tvalue_tostring(reg);
+        e.is_top         = (reg == L->top);
+        e.is_params      = (i < p->numparams);
+        e.table_ptr      = ttistable(reg) ? (const void*)hvalue(reg) : nullptr;
+        e.table_expanded = false;
         g_registers_cache.push_back(e);
     }
 }
@@ -1101,6 +1233,64 @@ static void draw_call_stack() {
 /* ============================================================
  *  UI: Local Variables  (reads from cache — never touches g_co)
  * ============================================================ */
+
+/* ---- recursive table-row helpers (forward declare) ---- */
+static void render_locals_child(TableChild &ch, int depth);
+
+static void render_local_entry(LocalEntry &e) {
+    ImGui::TableNextRow();
+
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TextUnformatted(e.name.c_str());
+
+    ImGui::TableSetColumnIndex(1);
+    if (e.table_ptr) {
+        ImGui::PushID((int)(intptr_t)&e);
+        if (ImGui::SmallButton(e.table_expanded ? "[-]" : "[+]")) {
+            e.table_expanded = !e.table_expanded;
+            if (e.table_expanded && e.table_children.empty())
+                expand_entry((void*)e.table_ptr, e.table_children, MAX_TABLE_DEPTH);
+        }
+        ImGui::PopID();
+        ImGui::SameLine();
+    }
+    ImGui::TextUnformatted(e.value.c_str());
+
+    if (e.table_expanded) {
+        for (auto &ch : e.table_children)
+            render_locals_child(ch, 1);
+    }
+}
+
+static void render_locals_child(TableChild &ch, int depth) {
+    ImGui::TableNextRow();
+
+    /* indentation in Name column */
+    ImGui::TableSetColumnIndex(0);
+    ImGui::Indent((float)(depth * 15));
+    ImGui::TextColored(ImVec4(0.6f, 0.9f, 0.6f, 1.0f), "%s", ch.key.c_str());
+    ImGui::Unindent((float)(depth * 15));
+
+    ImGui::TableSetColumnIndex(1);
+    if (ch.table_ptr) {
+        ImGui::PushID((int)(intptr_t)&ch);
+        if (ImGui::SmallButton(ch.expanded ? "[-]" : "[+]")) {
+            ch.expanded = !ch.expanded;
+            if (ch.expanded && ch.children.empty())
+                expand_table_child(ch, MAX_TABLE_DEPTH - depth);
+        }
+        ImGui::PopID();
+        ImGui::SameLine();
+    }
+    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f),
+                       "%s  %s", ch.value_type.c_str(), ch.value.c_str());
+
+    if (ch.expanded) {
+        for (auto &nested : ch.children)
+            render_locals_child(nested, depth + 1);
+    }
+}
+
 static void draw_locals() {
     ImGui::Begin("Locals");
 
@@ -1110,46 +1300,123 @@ static void draw_locals() {
         return;
     }
 
-    ImGui::Columns(2, "locals_cols", true);
-    ImGui::SetColumnWidth(0, 150);
-    ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "Name");
-    ImGui::NextColumn();
-    ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "Value");
-    ImGui::NextColumn();
-    ImGui::Separator();
+    if (ImGui::BeginTable("locals_tbl", 2,
+            ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV |
+            ImGuiTableFlags_RowBg)) {
+        ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableHeadersRow();
 
-    for (auto &e : g_locals_cache) {
-        ImGui::TextUnformatted(e.name.c_str());
-        ImGui::NextColumn();
-        ImGui::TextUnformatted(e.value.c_str());
-        ImGui::NextColumn();
-    }
+        for (auto &e : g_locals_cache)
+            render_local_entry(e);
 
-    /* Upvalues */
-    if (!g_upvals_cache.empty()) {
-        ImGui::Separator();
-        ImGui::NextColumn();
-        ImGui::NextColumn();
-        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.4f, 1.0f), "Upvalues");
-        ImGui::NextColumn();
-        ImGui::NextColumn();
-        ImGui::Separator();
+        /* Upvalues */
+        if (!g_upvals_cache.empty()) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.4f, 1.0f), "Upvalues");
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextUnformatted("");
 
-        for (auto &e : g_upvals_cache) {
-            ImGui::TextUnformatted(e.name.c_str());
-            ImGui::NextColumn();
-            ImGui::TextUnformatted(e.value.c_str());
-            ImGui::NextColumn();
+            for (auto &e : g_upvals_cache)
+                render_local_entry(e);
         }
+        ImGui::EndTable();
     }
 
-    ImGui::Columns(1);
     ImGui::End();
 }
 
 /* ============================================================
  *  UI: Registers  (reads from cache — never touches g_co)
  * ============================================================ */
+
+static void render_regs_child(TableChild &ch, int depth);
+
+static void render_reg_entry(RegisterEntry &e, int depth) {
+    ImGui::TableNextRow();
+
+    char regname[16];
+    snprintf(regname, sizeof(regname), "R%d", e.index);
+    ImVec4 color = ImVec4(1, 1, 1, 1);
+    if (e.is_top) color = ImVec4(1.0f, 0.75f, 0.25f, 1.0f);
+
+    /* Reg column */
+    ImGui::TableSetColumnIndex(0);
+    ImGui::Indent((float)(depth * 12));
+    ImGui::TextColored(color, "%s", regname);
+    ImGui::Unindent((float)(depth * 12));
+
+    /* Type column */
+    ImGui::TableSetColumnIndex(1);
+    ImGui::TextColored(color, "%s", e.type.c_str());
+
+    /* Value column — with [+]/[-] button if table */
+    ImGui::TableSetColumnIndex(2);
+    if (e.table_ptr) {
+        ImGui::PushID((int)(intptr_t)&e);
+        if (ImGui::SmallButton(e.table_expanded ? "[-]" : "[+]")) {
+            e.table_expanded = !e.table_expanded;
+            if (e.table_expanded && e.table_children.empty())
+                expand_entry((void*)e.table_ptr, e.table_children, MAX_TABLE_DEPTH);
+        }
+        ImGui::PopID();
+        ImGui::SameLine();
+    }
+    ImGui::TextColored(color, "%s", e.value.c_str());
+
+    /* Note column */
+    ImGui::TableSetColumnIndex(3);
+    if (e.is_top && e.is_params)
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.3f, 1.0f), "top|param");
+    else if (e.is_top)
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f), "top");
+    else if (e.is_params)
+        ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f), "param");
+
+    if (e.table_expanded) {
+        for (auto &ch : e.table_children)
+            render_regs_child(ch, depth + 1);
+    }
+}
+
+static void render_regs_child(TableChild &ch, int depth) {
+    ImGui::TableNextRow();
+    ImVec4 child_color = ImVec4(0.6f, 0.9f, 0.6f, 1.0f);
+
+    /* Key (indented, in Reg column) */
+    ImGui::TableSetColumnIndex(0);
+    ImGui::Indent((float)(depth * 12));
+    ImGui::TextColored(child_color, "%s", ch.key.c_str());
+    ImGui::Unindent((float)(depth * 12));
+
+    /* Type */
+    ImGui::TableSetColumnIndex(1);
+    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "%s", ch.value_type.c_str());
+
+    /* Value */
+    ImGui::TableSetColumnIndex(2);
+    if (ch.table_ptr) {
+        ImGui::PushID((int)(intptr_t)&ch);
+        if (ImGui::SmallButton(ch.expanded ? "[-]" : "[+]")) {
+            ch.expanded = !ch.expanded;
+            if (ch.expanded && ch.children.empty())
+                expand_table_child(ch, MAX_TABLE_DEPTH - depth);
+        }
+        ImGui::PopID();
+        ImGui::SameLine();
+    }
+    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "%s", ch.value.c_str());
+
+    /* Note column (empty for children) */
+    ImGui::TableSetColumnIndex(3);
+
+    if (ch.expanded) {
+        for (auto &nested : ch.children)
+            render_regs_child(nested, depth + 1);
+    }
+}
+
 static void draw_registers() {
     ImGui::Begin("Registers");
 
@@ -1165,52 +1432,22 @@ static void draw_registers() {
         return;
     }
 
-    /* Header */
-    ImGui::Columns(4, "regs_cols", true);
-    ImGui::SetColumnWidth(0, 50);
-    ImGui::SetColumnWidth(1, 70);
-    float col2_w = ImGui::GetContentRegionAvail().x - 170;
-    if (col2_w < 100) col2_w = 100;
-    ImGui::SetColumnWidth(2, col2_w);
-    ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "Reg");
-    ImGui::NextColumn();
-    ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "Type");
-    ImGui::NextColumn();
-    ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "Value");
-    ImGui::NextColumn();
-    ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "Note");
-    ImGui::NextColumn();
-    ImGui::Separator();
+    if (ImGui::BeginTable("regs_tbl", 4,
+            ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV |
+            ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
+            ImVec2(0, -1))) {
+        ImGui::TableSetupColumn("Reg",   ImGuiTableColumnFlags_WidthFixed, 45);
+        ImGui::TableSetupColumn("Type",  ImGuiTableColumnFlags_WidthFixed, 65);
+        ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Note",  ImGuiTableColumnFlags_WidthFixed, 55);
+        ImGui::TableHeadersRow();
 
-    for (auto &e : g_registers_cache) {
-        char regname[16];
-        snprintf(regname, sizeof(regname), "R%d", e.index);
+        for (auto &e : g_registers_cache)
+            render_reg_entry(e, 0);
 
-        /* Highlight top-of-stack */
-        ImVec4 color = ImVec4(1, 1, 1, 1);
-        if (e.is_top) color = ImVec4(1.0f, 0.75f, 0.25f, 1.0f);  /* gold */
-
-        ImGui::TextColored(color, "%s", regname);
-        ImGui::NextColumn();
-        ImGui::TextColored(color, "%s", e.type.c_str());
-        ImGui::NextColumn();
-        ImGui::TextColored(color, "%s", e.value.c_str());
-        ImGui::NextColumn();
-
-        /* Note column */
-        if (e.is_top && e.is_params)
-            ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.3f, 1.0f), "top|param");
-        else if (e.is_top)
-            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f), "top");
-        else if (e.is_params)
-            ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f), "param");
-        else
-            ImGui::TextUnformatted("");
-
-        ImGui::NextColumn();
+        ImGui::EndTable();
     }
 
-    ImGui::Columns(1);
     ImGui::End();
 }
 
@@ -1771,11 +2008,10 @@ int main(int argc, char *argv[]) {
     /* java_main as Lua function (not C!) so debug hook can yield inside main() */
     if (luaL_dostring(g_mainL,
         "java_main = function()\n"
-        "  local argc = argc or 0\n"
         "  local argv = argv\n"
         "  for k, v in pairs(_ENV) do\n"
         "    if type(v) == 'table' and type(v.main) == 'function' then\n"
-        "      v.main(argc, argv)\n"
+        "      v.main(argv)\n"
         "      return\n"
         "    end\n"
         "  end\n"
@@ -1786,11 +2022,31 @@ int main(int argc, char *argv[]) {
     }
     lua_gc(g_mainL, LUA_GCSTOP, 0);  /* stop GC for debugging stability */
 
-    /* Set default argc/argv globals (can be changed via console) */
-    lua_pushinteger(g_mainL, 0);
-    lua_setglobal(g_mainL, "argc");
-    lua_pushlightuserdata(g_mainL, nullptr);
-    lua_setglobal(g_mainL, "argv");
+    /* Build argv as a Lua table with 0-based indexing (Java convention).
+     * args[0] = script file name, args[1..] = extra command-line args */
+    {
+        int ntotal = 0;
+        lua_createtable(g_mainL, 0, 0);
+
+        /* args[0] = script filename */
+        if (load_file) {
+            lua_pushstring(g_mainL, load_file);
+            lua_rawseti(g_mainL, -2, 0);
+            ntotal++;
+        }
+
+        /* args[1..] = extra command-line args (skip program name + script) */
+        int start_idx = load_file ? 2 : 1;
+        for (int i = start_idx; i < argc; i++) {
+            lua_pushstring(g_mainL, argv[i]);
+            lua_rawseti(g_mainL, -2, ntotal);
+            ntotal++;
+        }
+
+        lua_setglobal(g_mainL, "argv");
+        lua_pushinteger(g_mainL, ntotal);
+        lua_setglobal(g_mainL, "argc");
+    }
 
     /* Load persisted config (recent files, break-on-main, breakpoints) */
     config_load();
