@@ -38,6 +38,8 @@ target_compile_options(lua_source PRIVATE
     -Wall -Wextra
     -DLUA_COMPAT_5_2
     -DLUA_USE_LINUX
+    -fsanitize=address
+    -fno-omit-frame-pointer
 )
 
 # ============================================================
@@ -45,6 +47,13 @@ target_compile_options(lua_source PRIVATE
 # ============================================================
 add_executable(lua_test src/main.c)
 target_link_libraries(lua_test PRIVATE lua_source m dl)
+target_compile_options(lua_test PRIVATE
+    -fsanitize=address
+    -fno-omit-frame-pointer
+)
+target_link_options(lua_test PRIVATE
+    -fsanitize=address
+)
 
 # ============================================================
 # ImGui
@@ -61,6 +70,10 @@ set(IMGUI_SOURCES
 )
 add_library(imgui STATIC ${IMGUI_SOURCES})
 target_include_directories(imgui PUBLIC ${IMGUI_DIR} ${IMGUI_DIR}/backends)
+target_compile_options(imgui PRIVATE
+    -fsanitize=address
+    -fno-omit-frame-pointer
+)
 
 # ---- 查找 GLFW3 + OpenGL ---- */
 find_package(PkgConfig REQUIRED)
@@ -88,6 +101,11 @@ target_link_libraries(lua_dbg PRIVATE
 target_compile_options(lua_dbg PRIVATE
     -Wall -Wextra
     -Wno-unused-parameter
+    -fsanitize=address
+    -fno-omit-frame-pointer
+)
+target_link_options(lua_dbg PRIVATE
+    -fsanitize=address
 )
 
 # 测试

@@ -1,0 +1,1547 @@
+=== Lua + Java Test ===
+Lua version: Lua 5.3.6
+
+
+--- Java: /home/wulin/lua+java/demo/ComprehensiveDemo.java ---
+  Compiled OK
+  --- Bytecode dump ---
+    dump: idx=-1 top=1 ci=0x5aa15e8df308
+    dump: o=0x5aa15e8df8d0 L->stack=0x5aa15e8df8c0 L->top=0x5aa15e8df8e0
+    dump: it's an LClosure
+    dump: proto=0x5aa15e8ebe00
+=== Proto 0x5aa15e8ebe00: params=0 stack=2 code=39 consts=21 protos=2 ===
+-- Constants (21):
+  [ 0] "_j_import_wildcard"
+  [ 1] "java.util."
+  [ 2] "require"
+  [ 3] "java.lang.StringBuilder"
+  [ 4] "StringBuilder"
+  [ 5] "demo.DemoPerson"
+  [ 6] "DemoPerson"
+  [ 7] "demo.DemoUtils"
+  [ 8] "DemoUtils"
+  [ 9] "ComprehensiveDemo"
+  [10] 0
+  [11] "PENDING"
+  [12] 1
+  [13] "ACTIVE"
+  [14] 2
+  [15] "DONE"
+  [16] "Status"
+  [17] "=== Comprehensive Demo ==="
+  [18] "TITLE"
+  [19] "factorial"
+  [20] "main"
+-- Code (39):
+     0 GETTABUP  A=0  B=0  C=256  ; "_j_import_wildcard"  -- _ENV lookup
+     1 LOADK     A=1  Bx=1   
+     2 CALL      A=0  B=2  C=2     -- call(args=2, rets=2)
+     3 GETTABUP  A=2  B=0  C=258  ; "require"  -- _ENV lookup
+     4 LOADK     A=3  Bx=3   
+     5 CALL      A=2  B=2  C=2     -- call(args=2, rets=2)
+     6 SETTABUP  A=0  B=260 C=2     -- _ENV store
+     7 GETTABUP  A=2  B=0  C=258  ; "require"  -- _ENV lookup
+     8 LOADK     A=3  Bx=5   
+     9 CALL      A=2  B=2  C=2     -- call(args=2, rets=2)
+    10 SETTABUP  A=0  B=262 C=2     -- _ENV store
+    11 GETTABUP  A=2  B=0  C=258  ; "require"  -- _ENV lookup
+    12 LOADK     A=3  Bx=7   
+    13 CALL      A=2  B=2  C=2     -- call(args=2, rets=2)
+    14 SETTABUP  A=0  B=264 C=2     -- _ENV store
+    15 NEWTABLE  A=2  B=0  C=0   
+    16 SETTABUP  A=0  B=265 C=2     -- _ENV store
+    17 NEWTABLE  A=3  B=0  C=0   
+    18 LOADK     A=4  Bx=10  
+    19 SETTABLE  A=3  B=267 C=4     -- set
+    20 SETTABUP  A=0  B=267 C=4     -- _ENV store
+    21 LOADK     A=4  Bx=12  
+    22 SETTABLE  A=3  B=269 C=4     -- set
+    23 SETTABUP  A=0  B=269 C=4     -- _ENV store
+    24 LOADK     A=4  Bx=14  
+    25 SETTABLE  A=3  B=271 C=4     -- set
+    26 SETTABUP  A=0  B=271 C=4     -- _ENV store
+    27 SETTABLE  A=2  B=272 C=3     -- set
+    28 SETTABUP  A=0  B=272 C=3     -- _ENV store
+    29 LOADK     A=3  Bx=17  
+    30 SETTABLE  A=2  B=274 C=3     -- set
+    31 SETTABUP  A=0  B=274 C=3     -- _ENV store
+    32 CLOSURE   A=3  Bx=0    ; proto[0]
+    33 SETTABLE  A=2  B=275 C=3     -- set
+    34 SETTABUP  A=0  B=275 C=3     -- _ENV store
+    35 CLOSURE   A=3  Bx=1    ; proto[1]
+    36 SETTABLE  A=2  B=276 C=3     -- set
+    37 SETTABUP  A=0  B=276 C=3     -- _ENV store
+    38 RETURN    A=2  B=2  C=0   
+  === Proto 0x5aa15e8ecb30: params=1 stack=0 code=10 consts=2 protos=0 ===
+  -- Constants (2):
+    [ 0] 1
+    [ 1] "factorial"
+  -- Code (10):
+       0 LE        A=0  B=0  C=256  ; 1
+       1 JMP       A=0  sBx=2   
+       2 LOADK     A=1  Bx=0   
+       3 RETURN    A=1  B=2  C=0   
+       4 GETTABUP  A=2  B=0  C=257  ; "factorial"  -- _ENV lookup
+       5 SUB       A=3  B=0  C=256  ; 1
+       6 CALL      A=2  B=2  C=2     -- call(args=2, rets=2)
+       7 MUL       A=1  B=0  C=2   
+       8 RETURN    A=1  B=2  C=0   
+       9 RETURN    A=0  B=1  C=0   
+  === Proto 0x5aa15e8ed710: params=1 stack=0 code=1179 consts=168 protos=0 ===
+  -- Constants (168):
+    [ 0] "System"
+    [ 1] "out"
+    [ 2] "println"
+    [ 3] "TITLE"
+    [ 4] ""
+    [ 5] 42
+    [ 6] 3.14159
+    [ 7] "Hello"
+    [ 8] 65
+    [ 9] 255
+    [10] "int    = "
+    [11] "double = "
+    [12] "bool   = "
+    [13] "String = "
+    [14] "char   = "
+    [15] "hex    = "
+    [16] "print"
+    [17] "null check: "
+    [18] nil
+    [19] "nothing is null"
+    [20] "nothing is NOT null"
+    [21] "--- Operators ---"
+    [22] 10
+    [23] 3
+    [24] "10 + 3   = "
+    [25] "10 - 3   = "
+    [26] "10 * 3   = "
+    [27] "10 / 3   = "
+    [28] "10 % 3   = "
+    [29] "true && false = "
+    [30] "true || false = "
+    [31] "!true         = "
+    [32] "10 > 3        = "
+    [33] "10 == 3       = "
+    [34] "10 != 3       = "
+    [35] 5
+    [36] "5 += 3  = "
+    [37] 1
+    [38] "z++     = "
+    [39] "--- If/Else ---"
+    [40] 85
+    [41] 90
+    [42] "Grade: A"
+    [43] 80
+    [44] "Grade: B"
+    [45] 70
+    [46] "Grade: C"
+    [47] "Grade: F"
+    [48] "--- Switch ---"
+    [49] "Monday"
+    [50] 2
+    [51] "Tuesday"
+    [52] "Wednesday"
+    [53] 4
+    [54] "Thursday"
+    [55] "Friday"
+    [56] "Weekend"
+    [57] "--- For Loop ---"
+    [58] 0
+    [59] "Sum 1..10 = "
+    [60] "--- While Loop ---"
+    [61] " "
+    [62] "Go!"
+    [63] "--- Do-While ---"
+    [64] 30
+    [65] "do-while result: "
+    [66] "--- Array ---"
+    [67] 20
+    [68] 40
+    [69] 50
+    [70] "Array sum = "
+    [71] "--- ArrayList ---"
+    [72] "ArrayList"
+    [73] "add"
+    [74] "Apple"
+    [75] "Banana"
+    [76] "Cherry"
+    [77] "Date"
+    [78] "size: "
+    [79] "size"
+    [80] "fruits[1] = "
+    [81] "get"
+    [82] "fruits[3] = "
+    [83] "--- For-Each ---"
+    [84] "--- HashMap ---"
+    [85] "HashMap"
+    [86] "put"
+    [87] "Alice"
+    [88] "Bob"
+    [89] 25
+    [90] "Charlie"
+    [91] 35
+    [92] "Alice   = "
+    [93] "Bob     = "
+    [94] "Charlie = "
+    [95] "size    = "
+    [96] "has Bob? "
+    [97] "containsKey"
+    [98] "has Eve? "
+    [99] "Eve"
+    [100] "--- StringBuilder ---"
+    [101] "StringBuilder"
+    [102] "append"
+    [103] ", "
+    [104] "World"
+    [105] "!"
+    [106] "SB toString: "
+    [107] "toString"
+    [108] "--- Enum ---"
+    [109] "Status"
+    [110] "PENDING"
+    [111] "ACTIVE"
+    [112] "DONE"
+    [113] "PENDING = "
+    [114] "ACTIVE  = "
+    [115] "DONE    = "
+    [116] "--- Static Methods ---"
+    [117] "DemoUtils"
+    [118] 15
+    [119] 27
+    [120] "15 + 27 = "
+    [121] "PI = "
+    [122] "PI"
+    [123] "MAX_SCORE = "
+    [124] "MAX_SCORE"
+    [125] "sum"
+    [126] "sum(1,2,3) = "
+    [127] "sum(10,20,30,40,50) = "
+    [128] "doubleAndIncrement"
+    [129] "doubleAndIncrement(5) = "
+    [130] "--- Recursion ---"
+    [131] "factorial"
+    [132] "5! = "
+    [133] "10! = "
+    [134] "--- Objects ---"
+    [135] "DemoPerson"
+    [136] "describe"
+    [137] "birthday"
+    [138] "after birthday: "
+    [139] "Alice age = "
+    [140] "getAge"
+    [141] "Bob name  = "
+    [142] "getName"
+    [143] "--- Math ---"
+    [144] "ceil(3.14)  = "
+    [145] "Math"
+    [146] "floor"
+    [147] 3.14
+    [148] "floor(3.14) = "
+    [149] "ceil"
+    [150] "abs(-42)    = "
+    [151] "abs"
+    [152] -42
+    [153] "max(10,20)  = "
+    [154] "max"
+    [155] "--- Integration ---"
+    [156] "Integer"
+    [157] "Total of 1..10 = "
+    [158] "count"
+    [159] "min"
+    [160] "Stats: [count="
+    [161] ", sum="
+    [162] ", min="
+    [163] ", max="
+    [164] "]"
+    [165] 55
+    [166] "Sum check (55 == 55)? "
+    [167] "=== ALL FEATURES DEMO COMPLETE ==="
+  -- Code (1179):
+       0 GETTABUP  A=1  B=0  C=256  ; "System"  -- _ENV lookup
+       1 GETTABLE  A=1  B=1  C=257  ; "out"  -- get
+       2 GETTABLE  A=2  B=1  C=258  ; "println"  -- get
+       3 GETTABUP  A=3  B=0  C=259  ; "TITLE"  -- _ENV lookup
+       4 CALL      A=2  B=2  C=2     -- call(args=2, rets=2)
+       5 GETTABUP  A=2  B=0  C=256  ; "System"  -- _ENV lookup
+       6 GETTABLE  A=2  B=2  C=257  ; "out"  -- get
+       7 GETTABLE  A=3  B=2  C=258  ; "println"  -- get
+       8 LOADK     A=4  Bx=4   
+       9 CALL      A=3  B=2  C=2     -- call(args=2, rets=2)
+      10 LOADK     A=1  Bx=5   
+      11 LOADK     A=2  Bx=6   
+      12 LOADBOOL  A=3  B=1  C=0   
+      13 LOADK     A=4  Bx=7   
+      14 LOADK     A=5  Bx=8   
+      15 LOADK     A=6  Bx=9   
+      16 GETTABUP  A=7  B=0  C=256  ; "System"  -- _ENV lookup
+      17 GETTABLE  A=7  B=7  C=257  ; "out"  -- get
+      18 GETTABLE  A=8  B=7  C=258  ; "println"  -- get
+      19 LOADK     A=9  Bx=10  
+      20 MOVE      A=10 B=1  C=0   
+      21 CONCAT    A=9  B=9  C=10  
+      22 CALL      A=8  B=2  C=2     -- call(args=2, rets=2)
+      23 GETTABUP  A=8  B=0  C=256  ; "System"  -- _ENV lookup
+      24 GETTABLE  A=8  B=8  C=257  ; "out"  -- get
+      25 GETTABLE  A=9  B=8  C=258  ; "println"  -- get
+      26 LOADK     A=10 Bx=11  
+      27 MOVE      A=11 B=2  C=0   
+      28 CONCAT    A=10 B=10 C=11  
+      29 CALL      A=9  B=2  C=2     -- call(args=2, rets=2)
+      30 GETTABUP  A=9  B=0  C=256  ; "System"  -- _ENV lookup
+      31 GETTABLE  A=9  B=9  C=257  ; "out"  -- get
+      32 GETTABLE  A=10 B=9  C=258  ; "println"  -- get
+      33 LOADK     A=11 Bx=12  
+      34 MOVE      A=12 B=3  C=0   
+      35 CONCAT    A=11 B=11 C=12  
+      36 CALL      A=10 B=2  C=2     -- call(args=2, rets=2)
+      37 GETTABUP  A=10 B=0  C=256  ; "System"  -- _ENV lookup
+      38 GETTABLE  A=10 B=10 C=257  ; "out"  -- get
+      39 GETTABLE  A=11 B=10 C=258  ; "println"  -- get
+      40 LOADK     A=12 Bx=13  
+      41 MOVE      A=13 B=4  C=0   
+      42 CONCAT    A=12 B=12 C=13  
+      43 CALL      A=11 B=2  C=2     -- call(args=2, rets=2)
+      44 GETTABUP  A=11 B=0  C=256  ; "System"  -- _ENV lookup
+      45 GETTABLE  A=11 B=11 C=257  ; "out"  -- get
+      46 GETTABLE  A=12 B=11 C=258  ; "println"  -- get
+      47 LOADK     A=13 Bx=14  
+      48 MOVE      A=14 B=5  C=0   
+      49 CONCAT    A=13 B=13 C=14  
+      50 CALL      A=12 B=2  C=2     -- call(args=2, rets=2)
+      51 GETTABUP  A=12 B=0  C=256  ; "System"  -- _ENV lookup
+      52 GETTABLE  A=12 B=12 C=257  ; "out"  -- get
+      53 GETTABLE  A=13 B=12 C=258  ; "println"  -- get
+      54 LOADK     A=14 Bx=15  
+      55 MOVE      A=15 B=6  C=0   
+      56 CONCAT    A=14 B=14 C=15  
+      57 CALL      A=13 B=2  C=2     -- call(args=2, rets=2)
+      58 LOADBOOL  A=7  B=0  C=0   
+      59 GETTABUP  A=13 B=0  C=256  ; "System"  -- _ENV lookup
+      60 GETTABLE  A=13 B=13 C=257  ; "out"  -- get
+      61 GETTABLE  A=14 B=13 C=272  ; "print"  -- get
+      62 LOADK     A=15 Bx=17  
+      63 CALL      A=14 B=2  C=2     -- call(args=2, rets=2)
+      64 EQ        A=0  B=7  C=274 
+      65 JMP       A=0  sBx=6   
+      66 GETTABUP  A=14 B=0  C=256  ; "System"  -- _ENV lookup
+      67 GETTABLE  A=14 B=14 C=257  ; "out"  -- get
+      68 GETTABLE  A=15 B=14 C=258  ; "println"  -- get
+      69 LOADK     A=16 Bx=19  
+      70 CALL      A=15 B=2  C=2     -- call(args=2, rets=2)
+      71 JMP       A=0  sBx=5   
+      72 GETTABUP  A=15 B=0  C=256  ; "System"  -- _ENV lookup
+      73 GETTABLE  A=15 B=15 C=257  ; "out"  -- get
+      74 GETTABLE  A=16 B=15 C=258  ; "println"  -- get
+      75 LOADK     A=17 Bx=20  
+      76 CALL      A=16 B=2  C=2     -- call(args=2, rets=2)
+      77 GETTABUP  A=16 B=0  C=256  ; "System"  -- _ENV lookup
+      78 GETTABLE  A=16 B=16 C=257  ; "out"  -- get
+      79 GETTABLE  A=17 B=16 C=258  ; "println"  -- get
+      80 LOADK     A=18 Bx=4   
+      81 CALL      A=17 B=2  C=2     -- call(args=2, rets=2)
+      82 GETTABUP  A=17 B=0  C=256  ; "System"  -- _ENV lookup
+      83 GETTABLE  A=17 B=17 C=257  ; "out"  -- get
+      84 GETTABLE  A=18 B=17 C=258  ; "println"  -- get
+      85 LOADK     A=19 Bx=21  
+      86 CALL      A=18 B=2  C=2     -- call(args=2, rets=2)
+      87 LOADK     A=8  Bx=22  
+      88 LOADK     A=9  Bx=23  
+      89 GETTABUP  A=18 B=0  C=256  ; "System"  -- _ENV lookup
+      90 GETTABLE  A=18 B=18 C=257  ; "out"  -- get
+      91 GETTABLE  A=19 B=18 C=258  ; "println"  -- get
+      92 LOADK     A=20 Bx=24  
+      93 ADD       A=21 B=8  C=9   
+      94 CONCAT    A=20 B=20 C=21  
+      95 CALL      A=19 B=2  C=2     -- call(args=2, rets=2)
+      96 GETTABUP  A=19 B=0  C=256  ; "System"  -- _ENV lookup
+      97 GETTABLE  A=19 B=19 C=257  ; "out"  -- get
+      98 GETTABLE  A=20 B=19 C=258  ; "println"  -- get
+      99 LOADK     A=21 Bx=25  
+     100 SUB       A=22 B=8  C=9   
+     101 CONCAT    A=21 B=21 C=22  
+     102 CALL      A=20 B=2  C=2     -- call(args=2, rets=2)
+     103 GETTABUP  A=20 B=0  C=256  ; "System"  -- _ENV lookup
+     104 GETTABLE  A=20 B=20 C=257  ; "out"  -- get
+     105 GETTABLE  A=21 B=20 C=258  ; "println"  -- get
+     106 LOADK     A=22 Bx=26  
+     107 MUL       A=23 B=8  C=9   
+     108 CONCAT    A=22 B=22 C=23  
+     109 CALL      A=21 B=2  C=2     -- call(args=2, rets=2)
+     110 GETTABUP  A=21 B=0  C=256  ; "System"  -- _ENV lookup
+     111 GETTABLE  A=21 B=21 C=257  ; "out"  -- get
+     112 GETTABLE  A=22 B=21 C=258  ; "println"  -- get
+     113 LOADK     A=23 Bx=27  
+     114 DIV       A=24 B=8  C=9   
+     115 CONCAT    A=23 B=23 C=24  
+     116 CALL      A=22 B=2  C=2     -- call(args=2, rets=2)
+     117 GETTABUP  A=22 B=0  C=256  ; "System"  -- _ENV lookup
+     118 GETTABLE  A=22 B=22 C=257  ; "out"  -- get
+     119 GETTABLE  A=23 B=22 C=258  ; "println"  -- get
+     120 LOADK     A=24 Bx=28  
+     121 MOD       A=25 B=8  C=9   
+     122 CONCAT    A=24 B=24 C=25  
+     123 CALL      A=23 B=2  C=2     -- call(args=2, rets=2)
+     124 LOADBOOL  A=10 B=1  C=0   
+     125 LOADBOOL  A=11 B=0  C=0   
+     126 GETTABUP  A=23 B=0  C=256  ; "System"  -- _ENV lookup
+     127 GETTABLE  A=23 B=23 C=257  ; "out"  -- get
+     128 GETTABLE  A=24 B=23 C=258  ; "println"  -- get
+     129 LOADK     A=25 Bx=29  
+     130 TESTSET   A=26 B=10 C=0   
+     131 JMP       A=0  sBx=1   
+     132 MOVE      A=26 B=11 C=0   
+     133 CONCAT    A=25 B=25 C=26  
+     134 CALL      A=24 B=2  C=2     -- call(args=2, rets=2)
+     135 GETTABUP  A=24 B=0  C=256  ; "System"  -- _ENV lookup
+     136 GETTABLE  A=24 B=24 C=257  ; "out"  -- get
+     137 GETTABLE  A=25 B=24 C=258  ; "println"  -- get
+     138 LOADK     A=26 Bx=30  
+     139 TESTSET   A=27 B=10 C=1   
+     140 JMP       A=0  sBx=1   
+     141 MOVE      A=27 B=11 C=0   
+     142 CONCAT    A=26 B=26 C=27  
+     143 CALL      A=25 B=2  C=2     -- call(args=2, rets=2)
+     144 GETTABUP  A=25 B=0  C=256  ; "System"  -- _ENV lookup
+     145 GETTABLE  A=25 B=25 C=257  ; "out"  -- get
+     146 GETTABLE  A=26 B=25 C=258  ; "println"  -- get
+     147 LOADK     A=27 Bx=31  
+     148 NOT       A=28 B=10 C=0   
+     149 CONCAT    A=27 B=27 C=28  
+     150 CALL      A=26 B=2  C=2     -- call(args=2, rets=2)
+     151 GETTABUP  A=26 B=0  C=256  ; "System"  -- _ENV lookup
+     152 GETTABLE  A=26 B=26 C=257  ; "out"  -- get
+     153 GETTABLE  A=27 B=26 C=258  ; "println"  -- get
+     154 LOADK     A=28 Bx=32  
+     155 LT        A=1  B=9  C=8   
+     156 JMP       A=0  sBx=1   
+     157 LOADBOOL  A=29 B=0  C=1   
+     158 LOADBOOL  A=29 B=1  C=0   
+     159 CONCAT    A=28 B=28 C=29  
+     160 CALL      A=27 B=2  C=2     -- call(args=2, rets=2)
+     161 GETTABUP  A=27 B=0  C=256  ; "System"  -- _ENV lookup
+     162 GETTABLE  A=27 B=27 C=257  ; "out"  -- get
+     163 GETTABLE  A=28 B=27 C=258  ; "println"  -- get
+     164 LOADK     A=29 Bx=33  
+     165 EQ        A=1  B=8  C=9   
+     166 JMP       A=0  sBx=1   
+     167 LOADBOOL  A=30 B=0  C=1   
+     168 LOADBOOL  A=30 B=1  C=0   
+     169 CONCAT    A=29 B=29 C=30  
+     170 CALL      A=28 B=2  C=2     -- call(args=2, rets=2)
+     171 GETTABUP  A=28 B=0  C=256  ; "System"  -- _ENV lookup
+     172 GETTABLE  A=28 B=28 C=257  ; "out"  -- get
+     173 GETTABLE  A=29 B=28 C=258  ; "println"  -- get
+     174 LOADK     A=30 Bx=34  
+     175 EQ        A=0  B=8  C=9   
+     176 JMP       A=0  sBx=1   
+     177 LOADBOOL  A=31 B=0  C=1   
+     178 LOADBOOL  A=31 B=1  C=0   
+     179 CONCAT    A=30 B=30 C=31  
+     180 CALL      A=29 B=2  C=2     -- call(args=2, rets=2)
+     181 LOADK     A=12 Bx=35  
+     182 LOADK     A=29 Bx=23  
+     183 ADD       A=12 B=12 C=29  
+     184 GETTABUP  A=30 B=0  C=256  ; "System"  -- _ENV lookup
+     185 GETTABLE  A=30 B=30 C=257  ; "out"  -- get
+     186 GETTABLE  A=31 B=30 C=258  ; "println"  -- get
+     187 LOADK     A=32 Bx=36  
+     188 MOVE      A=33 B=12 C=0   
+     189 CONCAT    A=32 B=32 C=33  
+     190 CALL      A=31 B=2  C=2     -- call(args=2, rets=2)
+     191 ADD       A=12 B=12 C=293  ; 1
+     192 GETTABUP  A=31 B=0  C=256  ; "System"  -- _ENV lookup
+     193 GETTABLE  A=31 B=31 C=257  ; "out"  -- get
+     194 GETTABLE  A=32 B=31 C=258  ; "println"  -- get
+     195 LOADK     A=33 Bx=38  
+     196 MOVE      A=34 B=12 C=0   
+     197 CONCAT    A=33 B=33 C=34  
+     198 CALL      A=32 B=2  C=2     -- call(args=2, rets=2)
+     199 GETTABUP  A=32 B=0  C=256  ; "System"  -- _ENV lookup
+     200 GETTABLE  A=32 B=32 C=257  ; "out"  -- get
+     201 GETTABLE  A=33 B=32 C=258  ; "println"  -- get
+     202 LOADK     A=34 Bx=4   
+     203 CALL      A=33 B=2  C=2     -- call(args=2, rets=2)
+     204 GETTABUP  A=33 B=0  C=256  ; "System"  -- _ENV lookup
+     205 GETTABLE  A=33 B=33 C=257  ; "out"  -- get
+     206 GETTABLE  A=34 B=33 C=258  ; "println"  -- get
+     207 LOADK     A=35 Bx=39  
+     208 CALL      A=34 B=2  C=2     -- call(args=2, rets=2)
+     209 LOADK     A=13 Bx=40  
+     210 LE        A=0  B=297 C=13  
+     211 JMP       A=0  sBx=6   
+     212 GETTABUP  A=34 B=0  C=256  ; "System"  -- _ENV lookup
+     213 GETTABLE  A=34 B=34 C=257  ; "out"  -- get
+     214 GETTABLE  A=35 B=34 C=258  ; "println"  -- get
+     215 LOADK     A=36 Bx=42  
+     216 CALL      A=35 B=2  C=2     -- call(args=2, rets=2)
+     217 JMP       A=0  sBx=21  
+     218 LE        A=0  B=299 C=13  
+     219 JMP       A=0  sBx=6   
+     220 GETTABUP  A=35 B=0  C=256  ; "System"  -- _ENV lookup
+     221 GETTABLE  A=35 B=35 C=257  ; "out"  -- get
+     222 GETTABLE  A=36 B=35 C=258  ; "println"  -- get
+     223 LOADK     A=37 Bx=44  
+     224 CALL      A=36 B=2  C=2     -- call(args=2, rets=2)
+     225 JMP       A=0  sBx=13  
+     226 LE        A=0  B=301 C=13  
+     227 JMP       A=0  sBx=6   
+     228 GETTABUP  A=36 B=0  C=256  ; "System"  -- _ENV lookup
+     229 GETTABLE  A=36 B=36 C=257  ; "out"  -- get
+     230 GETTABLE  A=37 B=36 C=258  ; "println"  -- get
+     231 LOADK     A=38 Bx=46  
+     232 CALL      A=37 B=2  C=2     -- call(args=2, rets=2)
+     233 JMP       A=0  sBx=5   
+     234 GETTABUP  A=37 B=0  C=256  ; "System"  -- _ENV lookup
+     235 GETTABLE  A=37 B=37 C=257  ; "out"  -- get
+     236 GETTABLE  A=38 B=37 C=258  ; "println"  -- get
+     237 LOADK     A=39 Bx=47  
+     238 CALL      A=38 B=2  C=2     -- call(args=2, rets=2)
+     239 GETTABUP  A=38 B=0  C=256  ; "System"  -- _ENV lookup
+     240 GETTABLE  A=38 B=38 C=257  ; "out"  -- get
+     241 GETTABLE  A=39 B=38 C=258  ; "println"  -- get
+     242 LOADK     A=40 Bx=4   
+     243 CALL      A=39 B=2  C=2     -- call(args=2, rets=2)
+     244 GETTABUP  A=39 B=0  C=256  ; "System"  -- _ENV lookup
+     245 GETTABLE  A=39 B=39 C=257  ; "out"  -- get
+     246 GETTABLE  A=40 B=39 C=258  ; "println"  -- get
+     247 LOADK     A=41 Bx=48  
+     248 CALL      A=40 B=2  C=2     -- call(args=2, rets=2)
+     249 LOADK     A=14 Bx=23  
+     250 MOVE      A=40 B=14 C=0   
+     251 LOADK     A=41 Bx=37  
+     252 EQ        A=0  B=40 C=41  
+     253 JMP       A=0  sBx=7   
+     254 GETTABUP  A=42 B=0  C=256  ; "System"  -- _ENV lookup
+     255 GETTABLE  A=42 B=42 C=257  ; "out"  -- get
+     256 GETTABLE  A=43 B=42 C=258  ; "println"  -- get
+     257 LOADK     A=44 Bx=49  
+     258 CALL      A=43 B=2  C=2     -- call(args=2, rets=2)
+     259 JMP       A=0  sBx=46  
+     260 JMP       A=0  sBx=45  
+     261 LOADK     A=43 Bx=50  
+     262 EQ        A=0  B=40 C=43  
+     263 JMP       A=0  sBx=7   
+     264 GETTABUP  A=44 B=0  C=256  ; "System"  -- _ENV lookup
+     265 GETTABLE  A=44 B=44 C=257  ; "out"  -- get
+     266 GETTABLE  A=45 B=44 C=258  ; "println"  -- get
+     267 LOADK     A=46 Bx=51  
+     268 CALL      A=45 B=2  C=2     -- call(args=2, rets=2)
+     269 JMP       A=0  sBx=36  
+     270 JMP       A=0  sBx=35  
+     271 LOADK     A=45 Bx=23  
+     272 EQ        A=0  B=40 C=45  
+     273 JMP       A=0  sBx=7   
+     274 GETTABUP  A=46 B=0  C=256  ; "System"  -- _ENV lookup
+     275 GETTABLE  A=46 B=46 C=257  ; "out"  -- get
+     276 GETTABLE  A=47 B=46 C=258  ; "println"  -- get
+     277 LOADK     A=48 Bx=52  
+     278 CALL      A=47 B=2  C=2     -- call(args=2, rets=2)
+     279 JMP       A=0  sBx=26  
+     280 JMP       A=0  sBx=25  
+     281 LOADK     A=47 Bx=53  
+     282 EQ        A=0  B=40 C=47  
+     283 JMP       A=0  sBx=7   
+     284 GETTABUP  A=48 B=0  C=256  ; "System"  -- _ENV lookup
+     285 GETTABLE  A=48 B=48 C=257  ; "out"  -- get
+     286 GETTABLE  A=49 B=48 C=258  ; "println"  -- get
+     287 LOADK     A=50 Bx=54  
+     288 CALL      A=49 B=2  C=2     -- call(args=2, rets=2)
+     289 JMP       A=0  sBx=16  
+     290 JMP       A=0  sBx=15  
+     291 LOADK     A=49 Bx=35  
+     292 EQ        A=0  B=40 C=49  
+     293 JMP       A=0  sBx=7   
+     294 GETTABUP  A=50 B=0  C=256  ; "System"  -- _ENV lookup
+     295 GETTABLE  A=50 B=50 C=257  ; "out"  -- get
+     296 GETTABLE  A=51 B=50 C=258  ; "println"  -- get
+     297 LOADK     A=52 Bx=55  
+     298 CALL      A=51 B=2  C=2     -- call(args=2, rets=2)
+     299 JMP       A=0  sBx=6   
+     300 JMP       A=0  sBx=5   
+     301 GETTABUP  A=51 B=0  C=256  ; "System"  -- _ENV lookup
+     302 GETTABLE  A=51 B=51 C=257  ; "out"  -- get
+     303 GETTABLE  A=52 B=51 C=258  ; "println"  -- get
+     304 LOADK     A=53 Bx=56  
+     305 CALL      A=52 B=2  C=2     -- call(args=2, rets=2)
+     306 GETTABUP  A=52 B=0  C=256  ; "System"  -- _ENV lookup
+     307 GETTABLE  A=52 B=52 C=257  ; "out"  -- get
+     308 GETTABLE  A=53 B=52 C=258  ; "println"  -- get
+     309 LOADK     A=54 Bx=4   
+     310 CALL      A=53 B=2  C=2     -- call(args=2, rets=2)
+     311 GETTABUP  A=53 B=0  C=256  ; "System"  -- _ENV lookup
+     312 GETTABLE  A=53 B=53 C=257  ; "out"  -- get
+     313 GETTABLE  A=54 B=53 C=258  ; "println"  -- get
+     314 LOADK     A=55 Bx=57  
+     315 CALL      A=54 B=2  C=2     -- call(args=2, rets=2)
+     316 LOADK     A=15 Bx=58  
+     317 LOADK     A=16 Bx=37  
+     318 LE        A=0  B=16 C=278  ; 10
+     319 JMP       A=0  sBx=3   
+     320 ADD       A=15 B=15 C=16  
+     321 ADD       A=16 B=16 C=293  ; 1
+     322 JMP       A=0  sBx=-5  
+     323 GETTABUP  A=17 B=0  C=256  ; "System"  -- _ENV lookup
+     324 GETTABLE  A=17 B=17 C=257  ; "out"  -- get
+     325 GETTABLE  A=18 B=17 C=258  ; "println"  -- get
+     326 LOADK     A=19 Bx=59  
+     327 MOVE      A=20 B=15 C=0   
+     328 CONCAT    A=19 B=19 C=20  
+     329 CALL      A=18 B=2  C=2     -- call(args=2, rets=2)
+     330 GETTABUP  A=18 B=0  C=256  ; "System"  -- _ENV lookup
+     331 GETTABLE  A=18 B=18 C=257  ; "out"  -- get
+     332 GETTABLE  A=19 B=18 C=258  ; "println"  -- get
+     333 LOADK     A=20 Bx=4   
+     334 CALL      A=19 B=2  C=2     -- call(args=2, rets=2)
+     335 GETTABUP  A=19 B=0  C=256  ; "System"  -- _ENV lookup
+     336 GETTABLE  A=19 B=19 C=257  ; "out"  -- get
+     337 GETTABLE  A=20 B=19 C=258  ; "println"  -- get
+     338 LOADK     A=21 Bx=60  
+     339 CALL      A=20 B=2  C=2     -- call(args=2, rets=2)
+     340 LOADK     A=17 Bx=35  
+     341 LT        A=0  B=314 C=17  
+     342 JMP       A=0  sBx=9   
+     343 GETTABUP  A=20 B=0  C=256  ; "System"  -- _ENV lookup
+     344 GETTABLE  A=20 B=20 C=257  ; "out"  -- get
+     345 GETTABLE  A=21 B=20 C=272  ; "print"  -- get
+     346 MOVE      A=22 B=17 C=0   
+     347 LOADK     A=23 Bx=61  
+     348 CONCAT    A=22 B=22 C=23  
+     349 CALL      A=21 B=2  C=2     -- call(args=2, rets=2)
+     350 SUB       A=17 B=17 C=293  ; 1
+     351 JMP       A=0  sBx=-11 
+     352 GETTABUP  A=18 B=0  C=256  ; "System"  -- _ENV lookup
+     353 GETTABLE  A=18 B=18 C=257  ; "out"  -- get
+     354 GETTABLE  A=19 B=18 C=258  ; "println"  -- get
+     355 LOADK     A=20 Bx=62  
+     356 CALL      A=19 B=2  C=2     -- call(args=2, rets=2)
+     357 GETTABUP  A=19 B=0  C=256  ; "System"  -- _ENV lookup
+     358 GETTABLE  A=19 B=19 C=257  ; "out"  -- get
+     359 GETTABLE  A=20 B=19 C=258  ; "println"  -- get
+     360 LOADK     A=21 Bx=4   
+     361 CALL      A=20 B=2  C=2     -- call(args=2, rets=2)
+     362 GETTABUP  A=20 B=0  C=256  ; "System"  -- _ENV lookup
+     363 GETTABLE  A=20 B=20 C=257  ; "out"  -- get
+     364 GETTABLE  A=21 B=20 C=258  ; "println"  -- get
+     365 LOADK     A=22 Bx=63  
+     366 CALL      A=21 B=2  C=2     -- call(args=2, rets=2)
+     367 LOADK     A=18 Bx=58  
+     368 ADD       A=18 B=18 C=278  ; 10
+     369 LT        A=0  B=18 C=320  ; 30
+     370 JMP       A=0  sBx=1   
+     371 JMP       A=0  sBx=-4  
+     372 GETTABUP  A=19 B=0  C=256  ; "System"  -- _ENV lookup
+     373 GETTABLE  A=19 B=19 C=257  ; "out"  -- get
+     374 GETTABLE  A=20 B=19 C=258  ; "println"  -- get
+     375 LOADK     A=21 Bx=65  
+     376 MOVE      A=22 B=18 C=0   
+     377 CONCAT    A=21 B=21 C=22  
+     378 CALL      A=20 B=2  C=2     -- call(args=2, rets=2)
+     379 GETTABUP  A=20 B=0  C=256  ; "System"  -- _ENV lookup
+     380 GETTABLE  A=20 B=20 C=257  ; "out"  -- get
+     381 GETTABLE  A=21 B=20 C=258  ; "println"  -- get
+     382 LOADK     A=22 Bx=4   
+     383 CALL      A=21 B=2  C=2     -- call(args=2, rets=2)
+     384 GETTABUP  A=21 B=0  C=256  ; "System"  -- _ENV lookup
+     385 GETTABLE  A=21 B=21 C=257  ; "out"  -- get
+     386 GETTABLE  A=22 B=21 C=258  ; "println"  -- get
+     387 LOADK     A=23 Bx=66  
+     388 CALL      A=22 B=2  C=2     -- call(args=2, rets=2)
+     389 NEWTABLE  A=22 B=0  C=0   
+     390 LOADK     A=23 Bx=22  
+     391 SETTABLE  A=22 B=293 C=23    -- set
+     392 LOADK     A=23 Bx=67  
+     393 SETTABLE  A=22 B=306 C=23    -- set
+     394 LOADK     A=23 Bx=64  
+     395 SETTABLE  A=22 B=279 C=23    -- set
+     396 LOADK     A=23 Bx=68  
+     397 SETTABLE  A=22 B=309 C=23    -- set
+     398 LOADK     A=23 Bx=69  
+     399 SETTABLE  A=22 B=291 C=23    -- set
+     400 MOVE      A=19 B=22 C=0   
+     401 LOADK     A=20 Bx=58  
+     402 LOADK     A=21 Bx=58  
+     403 LT        A=0  B=21 C=291  ; 5
+     404 JMP       A=0  sBx=6   
+     405 MOVE      A=23 B=21 C=0   
+     406 ADD       A=23 B=23 C=293  ; 1
+     407 GETTABLE  A=23 B=19 C=23    -- get
+     408 ADD       A=20 B=20 C=23  
+     409 ADD       A=21 B=21 C=293  ; 1
+     410 JMP       A=0  sBx=-8  
+     411 GETTABUP  A=22 B=0  C=256  ; "System"  -- _ENV lookup
+     412 GETTABLE  A=22 B=22 C=257  ; "out"  -- get
+     413 GETTABLE  A=23 B=22 C=258  ; "println"  -- get
+     414 LOADK     A=24 Bx=70  
+     415 MOVE      A=25 B=20 C=0   
+     416 CONCAT    A=24 B=24 C=25  
+     417 CALL      A=23 B=2  C=2     -- call(args=2, rets=2)
+     418 GETTABUP  A=23 B=0  C=256  ; "System"  -- _ENV lookup
+     419 GETTABLE  A=23 B=23 C=257  ; "out"  -- get
+     420 GETTABLE  A=24 B=23 C=258  ; "println"  -- get
+     421 LOADK     A=25 Bx=4   
+     422 CALL      A=24 B=2  C=2     -- call(args=2, rets=2)
+     423 GETTABUP  A=24 B=0  C=256  ; "System"  -- _ENV lookup
+     424 GETTABLE  A=24 B=24 C=257  ; "out"  -- get
+     425 GETTABLE  A=25 B=24 C=258  ; "println"  -- get
+     426 LOADK     A=26 Bx=71  
+     427 CALL      A=25 B=2  C=2     -- call(args=2, rets=2)
+     428 NEWTABLE  A=25 B=0  C=0   
+     429 GETTABUP  A=26 B=0  C=328  ; "ArrayList"  -- _ENV lookup
+     430 GETTABLE  A=26 B=26 C=328  ; "ArrayList"  -- get
+     431 MOVE      A=27 B=25 C=0   
+     432 CALL      A=26 B=2  C=1     -- call(args=2, rets=1)
+     433 MOVE      A=22 B=25 C=0   
+     434 MOVE      A=26 B=22 C=0   
+     435 GETTABLE  A=27 B=26 C=329  ; "add"  -- get
+     436 MOVE      A=28 B=26 C=0   
+     437 LOADK     A=29 Bx=74  
+     438 CALL      A=27 B=3  C=2     -- call(args=3, rets=2)
+     439 MOVE      A=27 B=22 C=0   
+     440 GETTABLE  A=28 B=27 C=329  ; "add"  -- get
+     441 MOVE      A=29 B=27 C=0   
+     442 LOADK     A=30 Bx=75  
+     443 CALL      A=28 B=3  C=2     -- call(args=3, rets=2)
+     444 MOVE      A=28 B=22 C=0   
+     445 GETTABLE  A=29 B=28 C=329  ; "add"  -- get
+     446 MOVE      A=30 B=28 C=0   
+     447 LOADK     A=31 Bx=76  
+     448 CALL      A=29 B=3  C=2     -- call(args=3, rets=2)
+     449 MOVE      A=29 B=22 C=0   
+     450 GETTABLE  A=30 B=29 C=329  ; "add"  -- get
+     451 MOVE      A=31 B=29 C=0   
+     452 LOADK     A=32 Bx=77  
+     453 CALL      A=30 B=3  C=2     -- call(args=3, rets=2)
+     454 GETTABUP  A=30 B=0  C=256  ; "System"  -- _ENV lookup
+     455 GETTABLE  A=30 B=30 C=257  ; "out"  -- get
+     456 GETTABLE  A=31 B=30 C=258  ; "println"  -- get
+     457 LOADK     A=32 Bx=78  
+     458 MOVE      A=33 B=22 C=0   
+     459 GETTABLE  A=34 B=33 C=335  ; "size"  -- get
+     460 MOVE      A=35 B=33 C=0   
+     461 CALL      A=34 B=2  C=2     -- call(args=2, rets=2)
+     462 MOVE      A=33 B=34 C=0   
+     463 CONCAT    A=32 B=32 C=33  
+     464 CALL      A=31 B=2  C=2     -- call(args=2, rets=2)
+     465 GETTABUP  A=31 B=0  C=256  ; "System"  -- _ENV lookup
+     466 GETTABLE  A=31 B=31 C=257  ; "out"  -- get
+     467 GETTABLE  A=32 B=31 C=258  ; "println"  -- get
+     468 LOADK     A=33 Bx=80  
+     469 MOVE      A=34 B=22 C=0   
+     470 GETTABLE  A=35 B=34 C=337  ; "get"  -- get
+     471 MOVE      A=36 B=34 C=0   
+     472 LOADK     A=37 Bx=37  
+     473 CALL      A=35 B=3  C=2     -- call(args=3, rets=2)
+     474 MOVE      A=34 B=35 C=0   
+     475 CONCAT    A=33 B=33 C=34  
+     476 CALL      A=32 B=2  C=2     -- call(args=2, rets=2)
+     477 GETTABUP  A=32 B=0  C=256  ; "System"  -- _ENV lookup
+     478 GETTABLE  A=32 B=32 C=257  ; "out"  -- get
+     479 GETTABLE  A=33 B=32 C=258  ; "println"  -- get
+     480 LOADK     A=34 Bx=82  
+     481 MOVE      A=35 B=22 C=0   
+     482 GETTABLE  A=36 B=35 C=337  ; "get"  -- get
+     483 MOVE      A=37 B=35 C=0   
+     484 LOADK     A=38 Bx=23  
+     485 CALL      A=36 B=3  C=2     -- call(args=3, rets=2)
+     486 MOVE      A=35 B=36 C=0   
+     487 CONCAT    A=34 B=34 C=35  
+     488 CALL      A=33 B=2  C=2     -- call(args=2, rets=2)
+     489 GETTABUP  A=33 B=0  C=256  ; "System"  -- _ENV lookup
+     490 GETTABLE  A=33 B=33 C=257  ; "out"  -- get
+     491 GETTABLE  A=34 B=33 C=258  ; "println"  -- get
+     492 LOADK     A=35 Bx=4   
+     493 CALL      A=34 B=2  C=2     -- call(args=2, rets=2)
+     494 GETTABUP  A=34 B=0  C=256  ; "System"  -- _ENV lookup
+     495 GETTABLE  A=34 B=34 C=257  ; "out"  -- get
+     496 GETTABLE  A=35 B=34 C=258  ; "println"  -- get
+     497 LOADK     A=36 Bx=83  
+     498 CALL      A=35 B=2  C=2     -- call(args=2, rets=2)
+     499 LOADK     A=23 Bx=58  
+     500 MOVE      A=35 B=22 C=0   
+     501 GETTABLE  A=36 B=35 C=335  ; "size"  -- get
+     502 MOVE      A=37 B=35 C=0   
+     503 CALL      A=36 B=2  C=2     -- call(args=2, rets=2)
+     504 LT        A=0  B=23 C=36  
+     505 JMP       A=0  sBx=14  
+     506 GETTABUP  A=35 B=0  C=256  ; "System"  -- _ENV lookup
+     507 GETTABLE  A=35 B=35 C=257  ; "out"  -- get
+     508 GETTABLE  A=36 B=35 C=272  ; "print"  -- get
+     509 MOVE      A=37 B=22 C=0   
+     510 GETTABLE  A=38 B=37 C=337  ; "get"  -- get
+     511 MOVE      A=39 B=37 C=0   
+     512 MOVE      A=40 B=23 C=0   
+     513 CALL      A=38 B=3  C=2     -- call(args=3, rets=2)
+     514 MOVE      A=37 B=38 C=0   
+     515 LOADK     A=38 Bx=61  
+     516 CONCAT    A=37 B=37 C=38  
+     517 CALL      A=36 B=2  C=2     -- call(args=2, rets=2)
+     518 ADD       A=23 B=23 C=293  ; 1
+     519 JMP       A=0  sBx=-20 
+     520 GETTABUP  A=24 B=0  C=256  ; "System"  -- _ENV lookup
+     521 GETTABLE  A=24 B=24 C=257  ; "out"  -- get
+     522 GETTABLE  A=25 B=24 C=258  ; "println"  -- get
+     523 LOADK     A=26 Bx=4   
+     524 CALL      A=25 B=2  C=2     -- call(args=2, rets=2)
+     525 GETTABUP  A=25 B=0  C=256  ; "System"  -- _ENV lookup
+     526 GETTABLE  A=25 B=25 C=257  ; "out"  -- get
+     527 GETTABLE  A=26 B=25 C=258  ; "println"  -- get
+     528 LOADK     A=27 Bx=4   
+     529 CALL      A=26 B=2  C=2     -- call(args=2, rets=2)
+     530 GETTABUP  A=26 B=0  C=256  ; "System"  -- _ENV lookup
+     531 GETTABLE  A=26 B=26 C=257  ; "out"  -- get
+     532 GETTABLE  A=27 B=26 C=258  ; "println"  -- get
+     533 LOADK     A=28 Bx=84  
+     534 CALL      A=27 B=2  C=2     -- call(args=2, rets=2)
+     535 NEWTABLE  A=27 B=0  C=0   
+     536 GETTABUP  A=28 B=0  C=341  ; "HashMap"  -- _ENV lookup
+     537 GETTABLE  A=28 B=28 C=341  ; "HashMap"  -- get
+     538 MOVE      A=29 B=27 C=0   
+     539 CALL      A=28 B=2  C=1     -- call(args=2, rets=1)
+     540 MOVE      A=24 B=27 C=0   
+     541 MOVE      A=28 B=24 C=0   
+     542 GETTABLE  A=29 B=28 C=342  ; "put"  -- get
+     543 MOVE      A=30 B=28 C=0   
+     544 LOADK     A=31 Bx=87  
+     545 LOADK     A=32 Bx=64  
+     546 CALL      A=29 B=4  C=2     -- call(args=4, rets=2)
+     547 MOVE      A=29 B=24 C=0   
+     548 GETTABLE  A=30 B=29 C=342  ; "put"  -- get
+     549 MOVE      A=31 B=29 C=0   
+     550 LOADK     A=32 Bx=88  
+     551 LOADK     A=33 Bx=89  
+     552 CALL      A=30 B=4  C=2     -- call(args=4, rets=2)
+     553 MOVE      A=30 B=24 C=0   
+     554 GETTABLE  A=31 B=30 C=342  ; "put"  -- get
+     555 MOVE      A=32 B=30 C=0   
+     556 LOADK     A=33 Bx=90  
+     557 LOADK     A=34 Bx=91  
+     558 CALL      A=31 B=4  C=2     -- call(args=4, rets=2)
+     559 GETTABUP  A=31 B=0  C=256  ; "System"  -- _ENV lookup
+     560 GETTABLE  A=31 B=31 C=257  ; "out"  -- get
+     561 GETTABLE  A=32 B=31 C=258  ; "println"  -- get
+     562 LOADK     A=33 Bx=92  
+     563 MOVE      A=34 B=24 C=0   
+     564 GETTABLE  A=35 B=34 C=337  ; "get"  -- get
+     565 MOVE      A=36 B=34 C=0   
+     566 LOADK     A=37 Bx=87  
+     567 CALL      A=35 B=3  C=2     -- call(args=3, rets=2)
+     568 MOVE      A=34 B=35 C=0   
+     569 CONCAT    A=33 B=33 C=34  
+     570 CALL      A=32 B=2  C=2     -- call(args=2, rets=2)
+     571 GETTABUP  A=32 B=0  C=256  ; "System"  -- _ENV lookup
+     572 GETTABLE  A=32 B=32 C=257  ; "out"  -- get
+     573 GETTABLE  A=33 B=32 C=258  ; "println"  -- get
+     574 LOADK     A=34 Bx=93  
+     575 MOVE      A=35 B=24 C=0   
+     576 GETTABLE  A=36 B=35 C=337  ; "get"  -- get
+     577 MOVE      A=37 B=35 C=0   
+     578 LOADK     A=38 Bx=88  
+     579 CALL      A=36 B=3  C=2     -- call(args=3, rets=2)
+     580 MOVE      A=35 B=36 C=0   
+     581 CONCAT    A=34 B=34 C=35  
+     582 CALL      A=33 B=2  C=2     -- call(args=2, rets=2)
+     583 GETTABUP  A=33 B=0  C=256  ; "System"  -- _ENV lookup
+     584 GETTABLE  A=33 B=33 C=257  ; "out"  -- get
+     585 GETTABLE  A=34 B=33 C=258  ; "println"  -- get
+     586 LOADK     A=35 Bx=94  
+     587 MOVE      A=36 B=24 C=0   
+     588 GETTABLE  A=37 B=36 C=337  ; "get"  -- get
+     589 MOVE      A=38 B=36 C=0   
+     590 LOADK     A=39 Bx=90  
+     591 CALL      A=37 B=3  C=2     -- call(args=3, rets=2)
+     592 MOVE      A=36 B=37 C=0   
+     593 CONCAT    A=35 B=35 C=36  
+     594 CALL      A=34 B=2  C=2     -- call(args=2, rets=2)
+     595 GETTABUP  A=34 B=0  C=256  ; "System"  -- _ENV lookup
+     596 GETTABLE  A=34 B=34 C=257  ; "out"  -- get
+     597 GETTABLE  A=35 B=34 C=258  ; "println"  -- get
+     598 LOADK     A=36 Bx=95  
+     599 MOVE      A=37 B=24 C=0   
+     600 GETTABLE  A=38 B=37 C=335  ; "size"  -- get
+     601 MOVE      A=39 B=37 C=0   
+     602 CALL      A=38 B=2  C=2     -- call(args=2, rets=2)
+     603 MOVE      A=37 B=38 C=0   
+     604 CONCAT    A=36 B=36 C=37  
+     605 CALL      A=35 B=2  C=2     -- call(args=2, rets=2)
+     606 GETTABUP  A=35 B=0  C=256  ; "System"  -- _ENV lookup
+     607 GETTABLE  A=35 B=35 C=257  ; "out"  -- get
+     608 GETTABLE  A=36 B=35 C=258  ; "println"  -- get
+     609 LOADK     A=37 Bx=96  
+     610 MOVE      A=38 B=24 C=0   
+     611 GETTABLE  A=39 B=38 C=353  ; "containsKey"  -- get
+     612 MOVE      A=40 B=38 C=0   
+     613 LOADK     A=41 Bx=88  
+     614 CALL      A=39 B=3  C=2     -- call(args=3, rets=2)
+     615 MOVE      A=38 B=39 C=0   
+     616 CONCAT    A=37 B=37 C=38  
+     617 CALL      A=36 B=2  C=2     -- call(args=2, rets=2)
+     618 GETTABUP  A=36 B=0  C=256  ; "System"  -- _ENV lookup
+     619 GETTABLE  A=36 B=36 C=257  ; "out"  -- get
+     620 GETTABLE  A=37 B=36 C=258  ; "println"  -- get
+     621 LOADK     A=38 Bx=98  
+     622 MOVE      A=39 B=24 C=0   
+     623 GETTABLE  A=40 B=39 C=353  ; "containsKey"  -- get
+     624 MOVE      A=41 B=39 C=0   
+     625 LOADK     A=42 Bx=99  
+     626 CALL      A=40 B=3  C=2     -- call(args=3, rets=2)
+     627 MOVE      A=39 B=40 C=0   
+     628 CONCAT    A=38 B=38 C=39  
+     629 CALL      A=37 B=2  C=2     -- call(args=2, rets=2)
+     630 GETTABUP  A=37 B=0  C=256  ; "System"  -- _ENV lookup
+     631 GETTABLE  A=37 B=37 C=257  ; "out"  -- get
+     632 GETTABLE  A=38 B=37 C=258  ; "println"  -- get
+     633 LOADK     A=39 Bx=4   
+     634 CALL      A=38 B=2  C=2     -- call(args=2, rets=2)
+     635 GETTABUP  A=38 B=0  C=256  ; "System"  -- _ENV lookup
+     636 GETTABLE  A=38 B=38 C=257  ; "out"  -- get
+     637 GETTABLE  A=39 B=38 C=258  ; "println"  -- get
+     638 LOADK     A=40 Bx=100 
+     639 CALL      A=39 B=2  C=2     -- call(args=2, rets=2)
+     640 NEWTABLE  A=39 B=0  C=0   
+     641 GETTABUP  A=40 B=0  C=357  ; "StringBuilder"  -- _ENV lookup
+     642 GETTABLE  A=40 B=40 C=357  ; "StringBuilder"  -- get
+     643 MOVE      A=41 B=39 C=0   
+     644 CALL      A=40 B=2  C=1     -- call(args=2, rets=1)
+     645 MOVE      A=25 B=39 C=0   
+     646 MOVE      A=40 B=25 C=0   
+     647 GETTABLE  A=41 B=40 C=358  ; "append"  -- get
+     648 MOVE      A=42 B=40 C=0   
+     649 LOADK     A=43 Bx=7   
+     650 CALL      A=41 B=3  C=2     -- call(args=3, rets=2)
+     651 MOVE      A=41 B=25 C=0   
+     652 GETTABLE  A=42 B=41 C=358  ; "append"  -- get
+     653 MOVE      A=43 B=41 C=0   
+     654 LOADK     A=44 Bx=103 
+     655 CALL      A=42 B=3  C=2     -- call(args=3, rets=2)
+     656 MOVE      A=42 B=25 C=0   
+     657 GETTABLE  A=43 B=42 C=358  ; "append"  -- get
+     658 MOVE      A=44 B=42 C=0   
+     659 LOADK     A=45 Bx=104 
+     660 CALL      A=43 B=3  C=2     -- call(args=3, rets=2)
+     661 MOVE      A=43 B=25 C=0   
+     662 GETTABLE  A=44 B=43 C=358  ; "append"  -- get
+     663 MOVE      A=45 B=43 C=0   
+     664 LOADK     A=46 Bx=105 
+     665 CALL      A=44 B=3  C=2     -- call(args=3, rets=2)
+     666 GETTABUP  A=44 B=0  C=256  ; "System"  -- _ENV lookup
+     667 GETTABLE  A=44 B=44 C=257  ; "out"  -- get
+     668 GETTABLE  A=45 B=44 C=258  ; "println"  -- get
+     669 LOADK     A=46 Bx=106 
+     670 MOVE      A=47 B=25 C=0   
+     671 GETTABLE  A=48 B=47 C=363  ; "toString"  -- get
+     672 MOVE      A=49 B=47 C=0   
+     673 CALL      A=48 B=2  C=2     -- call(args=2, rets=2)
+     674 MOVE      A=47 B=48 C=0   
+     675 CONCAT    A=46 B=46 C=47  
+     676 CALL      A=45 B=2  C=2     -- call(args=2, rets=2)
+     677 GETTABUP  A=45 B=0  C=256  ; "System"  -- _ENV lookup
+     678 GETTABLE  A=45 B=45 C=257  ; "out"  -- get
+     679 GETTABLE  A=46 B=45 C=258  ; "println"  -- get
+     680 LOADK     A=47 Bx=4   
+     681 CALL      A=46 B=2  C=2     -- call(args=2, rets=2)
+     682 GETTABUP  A=46 B=0  C=256  ; "System"  -- _ENV lookup
+     683 GETTABLE  A=46 B=46 C=257  ; "out"  -- get
+     684 GETTABLE  A=47 B=46 C=258  ; "println"  -- get
+     685 LOADK     A=48 Bx=108 
+     686 CALL      A=47 B=2  C=2     -- call(args=2, rets=2)
+     687 GETTABUP  A=47 B=0  C=365  ; "Status"  -- _ENV lookup
+     688 GETTABLE  A=26 B=47 C=366  ; "PENDING"  -- get
+     689 GETTABUP  A=47 B=0  C=365  ; "Status"  -- _ENV lookup
+     690 GETTABLE  A=27 B=47 C=367  ; "ACTIVE"  -- get
+     691 GETTABUP  A=47 B=0  C=365  ; "Status"  -- _ENV lookup
+     692 GETTABLE  A=28 B=47 C=368  ; "DONE"  -- get
+     693 GETTABUP  A=47 B=0  C=256  ; "System"  -- _ENV lookup
+     694 GETTABLE  A=47 B=47 C=257  ; "out"  -- get
+     695 GETTABLE  A=48 B=47 C=258  ; "println"  -- get
+     696 LOADK     A=49 Bx=113 
+     697 MOVE      A=50 B=26 C=0   
+     698 CONCAT    A=49 B=49 C=50  
+     699 CALL      A=48 B=2  C=2     -- call(args=2, rets=2)
+     700 GETTABUP  A=48 B=0  C=256  ; "System"  -- _ENV lookup
+     701 GETTABLE  A=48 B=48 C=257  ; "out"  -- get
+     702 GETTABLE  A=49 B=48 C=258  ; "println"  -- get
+     703 LOADK     A=50 Bx=114 
+     704 MOVE      A=51 B=27 C=0   
+     705 CONCAT    A=50 B=50 C=51  
+     706 CALL      A=49 B=2  C=2     -- call(args=2, rets=2)
+     707 GETTABUP  A=49 B=0  C=256  ; "System"  -- _ENV lookup
+     708 GETTABLE  A=49 B=49 C=257  ; "out"  -- get
+     709 GETTABLE  A=50 B=49 C=258  ; "println"  -- get
+     710 LOADK     A=51 Bx=115 
+     711 MOVE      A=52 B=28 C=0   
+     712 CONCAT    A=51 B=51 C=52  
+     713 CALL      A=50 B=2  C=2     -- call(args=2, rets=2)
+     714 GETTABUP  A=50 B=0  C=256  ; "System"  -- _ENV lookup
+     715 GETTABLE  A=50 B=50 C=257  ; "out"  -- get
+     716 GETTABLE  A=51 B=50 C=258  ; "println"  -- get
+     717 LOADK     A=52 Bx=4   
+     718 CALL      A=51 B=2  C=2     -- call(args=2, rets=2)
+     719 GETTABUP  A=51 B=0  C=256  ; "System"  -- _ENV lookup
+     720 GETTABLE  A=51 B=51 C=257  ; "out"  -- get
+     721 GETTABLE  A=52 B=51 C=258  ; "println"  -- get
+     722 LOADK     A=53 Bx=116 
+     723 CALL      A=52 B=2  C=2     -- call(args=2, rets=2)
+     724 GETTABUP  A=52 B=0  C=373  ; "DemoUtils"  -- _ENV lookup
+     725 GETTABLE  A=53 B=52 C=329  ; "add"  -- get
+     726 LOADK     A=54 Bx=118 
+     727 LOADK     A=55 Bx=119 
+     728 CALL      A=53 B=3  C=2     -- call(args=3, rets=2)
+     729 MOVE      A=29 B=53 C=0   
+     730 GETTABUP  A=53 B=0  C=256  ; "System"  -- _ENV lookup
+     731 GETTABLE  A=53 B=53 C=257  ; "out"  -- get
+     732 GETTABLE  A=54 B=53 C=258  ; "println"  -- get
+     733 LOADK     A=55 Bx=120 
+     734 MOVE      A=56 B=29 C=0   
+     735 CONCAT    A=55 B=55 C=56  
+     736 CALL      A=54 B=2  C=2     -- call(args=2, rets=2)
+     737 GETTABUP  A=54 B=0  C=256  ; "System"  -- _ENV lookup
+     738 GETTABLE  A=54 B=54 C=257  ; "out"  -- get
+     739 GETTABLE  A=55 B=54 C=258  ; "println"  -- get
+     740 LOADK     A=56 Bx=121 
+     741 GETTABUP  A=57 B=0  C=373  ; "DemoUtils"  -- _ENV lookup
+     742 GETTABLE  A=57 B=57 C=378  ; "PI"  -- get
+     743 CONCAT    A=56 B=56 C=57  
+     744 CALL      A=55 B=2  C=2     -- call(args=2, rets=2)
+     745 GETTABUP  A=55 B=0  C=256  ; "System"  -- _ENV lookup
+     746 GETTABLE  A=55 B=55 C=257  ; "out"  -- get
+     747 GETTABLE  A=56 B=55 C=258  ; "println"  -- get
+     748 LOADK     A=57 Bx=123 
+     749 GETTABUP  A=58 B=0  C=373  ; "DemoUtils"  -- _ENV lookup
+     750 GETTABLE  A=58 B=58 C=380  ; "MAX_SCORE"  -- get
+     751 CONCAT    A=57 B=57 C=58  
+     752 CALL      A=56 B=2  C=2     -- call(args=2, rets=2)
+     753 GETTABUP  A=56 B=0  C=373  ; "DemoUtils"  -- _ENV lookup
+     754 GETTABLE  A=57 B=56 C=381  ; "sum"  -- get
+     755 LOADK     A=58 Bx=37  
+     756 LOADK     A=59 Bx=50  
+     757 LOADK     A=60 Bx=23  
+     758 CALL      A=57 B=4  C=2     -- call(args=4, rets=2)
+     759 MOVE      A=30 B=57 C=0   
+     760 GETTABUP  A=57 B=0  C=373  ; "DemoUtils"  -- _ENV lookup
+     761 GETTABLE  A=58 B=57 C=381  ; "sum"  -- get
+     762 LOADK     A=59 Bx=22  
+     763 LOADK     A=60 Bx=67  
+     764 LOADK     A=61 Bx=64  
+     765 LOADK     A=62 Bx=68  
+     766 LOADK     A=63 Bx=69  
+     767 CALL      A=58 B=6  C=2     -- call(args=6, rets=2)
+     768 MOVE      A=31 B=58 C=0   
+     769 GETTABUP  A=58 B=0  C=256  ; "System"  -- _ENV lookup
+     770 GETTABLE  A=58 B=58 C=257  ; "out"  -- get
+     771 GETTABLE  A=59 B=58 C=258  ; "println"  -- get
+     772 LOADK     A=60 Bx=126 
+     773 MOVE      A=61 B=30 C=0   
+     774 CONCAT    A=60 B=60 C=61  
+     775 CALL      A=59 B=2  C=2     -- call(args=2, rets=2)
+     776 GETTABUP  A=59 B=0  C=256  ; "System"  -- _ENV lookup
+     777 GETTABLE  A=59 B=59 C=257  ; "out"  -- get
+     778 GETTABLE  A=60 B=59 C=258  ; "println"  -- get
+     779 LOADK     A=61 Bx=127 
+     780 MOVE      A=62 B=31 C=0   
+     781 CONCAT    A=61 B=61 C=62  
+     782 CALL      A=60 B=2  C=2     -- call(args=2, rets=2)
+     783 GETTABUP  A=60 B=0  C=373  ; "DemoUtils"  -- _ENV lookup
+     784 GETTABLE  A=61 B=60 C=384  ; "doubleAndIncrement"  -- get
+     785 LOADK     A=62 Bx=35  
+     786 CALL      A=61 B=2  C=2     -- call(args=2, rets=2)
+     787 MOVE      A=32 B=61 C=0   
+     788 GETTABUP  A=61 B=0  C=256  ; "System"  -- _ENV lookup
+     789 GETTABLE  A=61 B=61 C=257  ; "out"  -- get
+     790 GETTABLE  A=62 B=61 C=258  ; "println"  -- get
+     791 LOADK     A=63 Bx=129 
+     792 MOVE      A=64 B=32 C=0   
+     793 CONCAT    A=63 B=63 C=64  
+     794 CALL      A=62 B=2  C=2     -- call(args=2, rets=2)
+     795 GETTABUP  A=62 B=0  C=256  ; "System"  -- _ENV lookup
+     796 GETTABLE  A=62 B=62 C=257  ; "out"  -- get
+     797 GETTABLE  A=63 B=62 C=258  ; "println"  -- get
+     798 LOADK     A=64 Bx=4   
+     799 CALL      A=63 B=2  C=2     -- call(args=2, rets=2)
+     800 GETTABUP  A=63 B=0  C=256  ; "System"  -- _ENV lookup
+     801 GETTABLE  A=63 B=63 C=257  ; "out"  -- get
+     802 GETTABLE  A=64 B=63 C=258  ; "println"  -- get
+     803 LOADK     A=65 Bx=130 
+     804 CALL      A=64 B=2  C=2     -- call(args=2, rets=2)
+     805 GETTABUP  A=64 B=0  C=387  ; "factorial"  -- _ENV lookup
+     806 LOADK     A=65 Bx=35  
+     807 CALL      A=64 B=2  C=2     -- call(args=2, rets=2)
+     808 MOVE      A=33 B=64 C=0   
+     809 GETTABUP  A=64 B=0  C=256  ; "System"  -- _ENV lookup
+     810 GETTABLE  A=64 B=64 C=257  ; "out"  -- get
+     811 GETTABLE  A=65 B=64 C=258  ; "println"  -- get
+     812 LOADK     A=66 Bx=132 
+     813 MOVE      A=67 B=33 C=0   
+     814 CONCAT    A=66 B=66 C=67  
+     815 CALL      A=65 B=2  C=2     -- call(args=2, rets=2)
+     816 GETTABUP  A=65 B=0  C=256  ; "System"  -- _ENV lookup
+     817 GETTABLE  A=65 B=65 C=257  ; "out"  -- get
+     818 GETTABLE  A=66 B=65 C=258  ; "println"  -- get
+     819 LOADK     A=67 Bx=133 
+     820 GETTABUP  A=68 B=0  C=387  ; "factorial"  -- _ENV lookup
+     821 LOADK     A=69 Bx=22  
+     822 CALL      A=68 B=2  C=2     -- call(args=2, rets=2)
+     823 CONCAT    A=67 B=67 C=68  
+     824 CALL      A=66 B=2  C=2     -- call(args=2, rets=2)
+     825 GETTABUP  A=66 B=0  C=256  ; "System"  -- _ENV lookup
+     826 GETTABLE  A=66 B=66 C=257  ; "out"  -- get
+     827 GETTABLE  A=67 B=66 C=258  ; "println"  -- get
+     828 LOADK     A=68 Bx=4   
+     829 CALL      A=67 B=2  C=2     -- call(args=2, rets=2)
+     830 GETTABUP  A=67 B=0  C=256  ; "System"  -- _ENV lookup
+     831 GETTABLE  A=67 B=67 C=257  ; "out"  -- get
+     832 GETTABLE  A=68 B=67 C=258  ; "println"  -- get
+     833 LOADK     A=69 Bx=134 
+     834 CALL      A=68 B=2  C=2     -- call(args=2, rets=2)
+     835 NEWTABLE  A=68 B=0  C=0   
+     836 LOADK     A=69 Bx=87  
+     837 LOADK     A=70 Bx=64  
+     838 GETTABUP  A=71 B=0  C=391  ; "DemoPerson"  -- _ENV lookup
+     839 GETTABLE  A=71 B=71 C=391  ; "DemoPerson"  -- get
+     840 MOVE      A=72 B=68 C=0   
+     841 MOVE      A=73 B=69 C=0   
+     842 MOVE      A=74 B=70 C=0   
+     843 CALL      A=71 B=4  C=1     -- call(args=4, rets=1)
+     844 MOVE      A=34 B=68 C=0   
+     845 NEWTABLE  A=69 B=0  C=0   
+     846 LOADK     A=70 Bx=88  
+     847 LOADK     A=71 Bx=89  
+     848 GETTABUP  A=72 B=0  C=391  ; "DemoPerson"  -- _ENV lookup
+     849 GETTABLE  A=72 B=72 C=391  ; "DemoPerson"  -- get
+     850 MOVE      A=73 B=69 C=0   
+     851 MOVE      A=74 B=70 C=0   
+     852 MOVE      A=75 B=71 C=0   
+     853 CALL      A=72 B=4  C=1     -- call(args=4, rets=1)
+     854 MOVE      A=35 B=69 C=0   
+     855 GETTABUP  A=70 B=0  C=256  ; "System"  -- _ENV lookup
+     856 GETTABLE  A=70 B=70 C=257  ; "out"  -- get
+     857 GETTABLE  A=71 B=70 C=258  ; "println"  -- get
+     858 MOVE      A=72 B=34 C=0   
+     859 GETTABLE  A=73 B=72 C=392  ; "describe"  -- get
+     860 MOVE      A=74 B=72 C=0   
+     861 CALL      A=73 B=2  C=2     -- call(args=2, rets=2)
+     862 MOVE      A=72 B=73 C=0   
+     863 CALL      A=71 B=2  C=2     -- call(args=2, rets=2)
+     864 GETTABUP  A=71 B=0  C=256  ; "System"  -- _ENV lookup
+     865 GETTABLE  A=71 B=71 C=257  ; "out"  -- get
+     866 GETTABLE  A=72 B=71 C=258  ; "println"  -- get
+     867 MOVE      A=73 B=35 C=0   
+     868 GETTABLE  A=74 B=73 C=392  ; "describe"  -- get
+     869 MOVE      A=75 B=73 C=0   
+     870 CALL      A=74 B=2  C=2     -- call(args=2, rets=2)
+     871 MOVE      A=73 B=74 C=0   
+     872 CALL      A=72 B=2  C=2     -- call(args=2, rets=2)
+     873 MOVE      A=72 B=34 C=0   
+     874 GETTABLE  A=73 B=72 C=393  ; "birthday"  -- get
+     875 MOVE      A=74 B=72 C=0   
+     876 CALL      A=73 B=2  C=2     -- call(args=2, rets=2)
+     877 GETTABUP  A=73 B=0  C=256  ; "System"  -- _ENV lookup
+     878 GETTABLE  A=73 B=73 C=257  ; "out"  -- get
+     879 GETTABLE  A=74 B=73 C=258  ; "println"  -- get
+     880 LOADK     A=75 Bx=138 
+     881 MOVE      A=76 B=34 C=0   
+     882 GETTABLE  A=77 B=76 C=392  ; "describe"  -- get
+     883 MOVE      A=78 B=76 C=0   
+     884 CALL      A=77 B=2  C=2     -- call(args=2, rets=2)
+     885 MOVE      A=76 B=77 C=0   
+     886 CONCAT    A=75 B=75 C=76  
+     887 CALL      A=74 B=2  C=2     -- call(args=2, rets=2)
+     888 GETTABUP  A=74 B=0  C=256  ; "System"  -- _ENV lookup
+     889 GETTABLE  A=74 B=74 C=257  ; "out"  -- get
+     890 GETTABLE  A=75 B=74 C=258  ; "println"  -- get
+     891 LOADK     A=76 Bx=139 
+     892 MOVE      A=77 B=34 C=0   
+     893 GETTABLE  A=78 B=77 C=396  ; "getAge"  -- get
+     894 MOVE      A=79 B=77 C=0   
+     895 CALL      A=78 B=2  C=2     -- call(args=2, rets=2)
+     896 MOVE      A=77 B=78 C=0   
+     897 CONCAT    A=76 B=76 C=77  
+     898 CALL      A=75 B=2  C=2     -- call(args=2, rets=2)
+     899 GETTABUP  A=75 B=0  C=256  ; "System"  -- _ENV lookup
+     900 GETTABLE  A=75 B=75 C=257  ; "out"  -- get
+     901 GETTABLE  A=76 B=75 C=258  ; "println"  -- get
+     902 LOADK     A=77 Bx=141 
+     903 MOVE      A=78 B=35 C=0   
+     904 GETTABLE  A=79 B=78 C=398  ; "getName"  -- get
+     905 MOVE      A=80 B=78 C=0   
+     906 CALL      A=79 B=2  C=2     -- call(args=2, rets=2)
+     907 MOVE      A=78 B=79 C=0   
+     908 CONCAT    A=77 B=77 C=78  
+     909 CALL      A=76 B=2  C=2     -- call(args=2, rets=2)
+     910 GETTABUP  A=76 B=0  C=256  ; "System"  -- _ENV lookup
+     911 GETTABLE  A=76 B=76 C=257  ; "out"  -- get
+     912 GETTABLE  A=77 B=76 C=258  ; "println"  -- get
+     913 LOADK     A=78 Bx=4   
+     914 CALL      A=77 B=2  C=2     -- call(args=2, rets=2)
+     915 GETTABUP  A=77 B=0  C=256  ; "System"  -- _ENV lookup
+     916 GETTABLE  A=77 B=77 C=257  ; "out"  -- get
+     917 GETTABLE  A=78 B=77 C=258  ; "println"  -- get
+     918 LOADK     A=79 Bx=143 
+     919 CALL      A=78 B=2  C=2     -- call(args=2, rets=2)
+     920 GETTABUP  A=78 B=0  C=256  ; "System"  -- _ENV lookup
+     921 GETTABLE  A=78 B=78 C=257  ; "out"  -- get
+     922 GETTABLE  A=79 B=78 C=258  ; "println"  -- get
+     923 LOADK     A=80 Bx=144 
+     924 GETTABUP  A=81 B=0  C=401  ; "Math"  -- _ENV lookup
+     925 GETTABLE  A=82 B=81 C=402  ; "floor"  -- get
+     926 LOADK     A=83 Bx=147 
+     927 CALL      A=82 B=2  C=2     -- call(args=2, rets=2)
+     928 MOVE      A=81 B=82 C=0   
+     929 CONCAT    A=80 B=80 C=81  
+     930 CALL      A=79 B=2  C=2     -- call(args=2, rets=2)
+     931 GETTABUP  A=79 B=0  C=256  ; "System"  -- _ENV lookup
+     932 GETTABLE  A=79 B=79 C=257  ; "out"  -- get
+     933 GETTABLE  A=80 B=79 C=258  ; "println"  -- get
+     934 LOADK     A=81 Bx=148 
+     935 GETTABUP  A=82 B=0  C=401  ; "Math"  -- _ENV lookup
+     936 GETTABLE  A=83 B=82 C=405  ; "ceil"  -- get
+     937 LOADK     A=84 Bx=147 
+     938 CALL      A=83 B=2  C=2     -- call(args=2, rets=2)
+     939 MOVE      A=82 B=83 C=0   
+     940 CONCAT    A=81 B=81 C=82  
+     941 CALL      A=80 B=2  C=2     -- call(args=2, rets=2)
+     942 GETTABUP  A=80 B=0  C=256  ; "System"  -- _ENV lookup
+     943 GETTABLE  A=80 B=80 C=257  ; "out"  -- get
+     944 GETTABLE  A=81 B=80 C=258  ; "println"  -- get
+     945 LOADK     A=82 Bx=150 
+     946 GETTABUP  A=83 B=0  C=401  ; "Math"  -- _ENV lookup
+     947 GETTABLE  A=84 B=83 C=407  ; "abs"  -- get
+     948 LOADK     A=85 Bx=152 
+     949 CALL      A=84 B=2  C=2     -- call(args=2, rets=2)
+     950 MOVE      A=83 B=84 C=0   
+     951 CONCAT    A=82 B=82 C=83  
+     952 CALL      A=81 B=2  C=2     -- call(args=2, rets=2)
+     953 GETTABUP  A=81 B=0  C=256  ; "System"  -- _ENV lookup
+     954 GETTABLE  A=81 B=81 C=257  ; "out"  -- get
+     955 GETTABLE  A=82 B=81 C=258  ; "println"  -- get
+     956 LOADK     A=83 Bx=153 
+     957 GETTABUP  A=84 B=0  C=401  ; "Math"  -- _ENV lookup
+     958 GETTABLE  A=85 B=84 C=410  ; "max"  -- get
+     959 LOADK     A=86 Bx=22  
+     960 LOADK     A=87 Bx=67  
+     961 CALL      A=85 B=3  C=2     -- call(args=3, rets=2)
+     962 MOVE      A=84 B=85 C=0   
+     963 CONCAT    A=83 B=83 C=84  
+     964 CALL      A=82 B=2  C=2     -- call(args=2, rets=2)
+     965 GETTABUP  A=82 B=0  C=256  ; "System"  -- _ENV lookup
+     966 GETTABLE  A=82 B=82 C=257  ; "out"  -- get
+     967 GETTABLE  A=83 B=82 C=258  ; "println"  -- get
+     968 LOADK     A=84 Bx=4   
+     969 CALL      A=83 B=2  C=2     -- call(args=2, rets=2)
+     970 GETTABUP  A=83 B=0  C=256  ; "System"  -- _ENV lookup
+     971 GETTABLE  A=83 B=83 C=257  ; "out"  -- get
+     972 GETTABLE  A=84 B=83 C=258  ; "println"  -- get
+     973 LOADK     A=85 Bx=155 
+     974 CALL      A=84 B=2  C=2     -- call(args=2, rets=2)
+     975 NEWTABLE  A=84 B=0  C=0   
+     976 GETTABUP  A=85 B=0  C=328  ; "ArrayList"  -- _ENV lookup
+     977 GETTABLE  A=85 B=85 C=328  ; "ArrayList"  -- get
+     978 MOVE      A=86 B=84 C=0   
+     979 CALL      A=85 B=2  C=1     -- call(args=2, rets=1)
+     980 MOVE      A=36 B=84 C=0   
+     981 LOADK     A=37 Bx=58  
+     982 LT        A=0  B=37 C=278  ; 10
+     983 JMP       A=0  sBx=7   
+     984 MOVE      A=85 B=36 C=0   
+     985 GETTABLE  A=86 B=85 C=329  ; "add"  -- get
+     986 MOVE      A=87 B=85 C=0   
+     987 ADD       A=88 B=37 C=293  ; 1
+     988 CALL      A=86 B=3  C=2     -- call(args=3, rets=2)
+     989 ADD       A=37 B=37 C=293  ; 1
+     990 JMP       A=0  sBx=-9  
+     991 LOADK     A=38 Bx=58  
+     992 LOADK     A=39 Bx=58  
+     993 MOVE      A=40 B=36 C=0   
+     994 GETTABLE  A=41 B=40 C=335  ; "size"  -- get
+     995 MOVE      A=42 B=40 C=0   
+     996 CALL      A=41 B=2  C=2     -- call(args=2, rets=2)
+     997 LT        A=0  B=39 C=41  
+     998 JMP       A=0  sBx=11  
+     999 GETTABUP  A=40 B=0  C=412  ; "Integer"  -- _ENV lookup
+    1000 MOVE      A=41 B=36 C=0   
+    1001 GETTABLE  A=42 B=41 C=337  ; "get"  -- get
+    1002 MOVE      A=43 B=41 C=0   
+    1003 MOVE      A=44 B=39 C=0   
+    1004 CALL      A=42 B=3  C=2     -- call(args=3, rets=2)
+    1005 MOVE      A=41 B=42 C=0   
+    1006 CALL      A=40 B=2  C=2     -- call(args=2, rets=2)
+    1007 ADD       A=38 B=38 C=40  
+    1008 ADD       A=39 B=39 C=293  ; 1
+    1009 JMP       A=0  sBx=-17 
+    1010 GETTABUP  A=40 B=0  C=256  ; "System"  -- _ENV lookup
+    1011 GETTABLE  A=40 B=40 C=257  ; "out"  -- get
+    1012 GETTABLE  A=41 B=40 C=258  ; "println"  -- get
+    1013 LOADK     A=42 Bx=157 
+    1014 MOVE      A=43 B=38 C=0   
+    1015 CONCAT    A=42 B=42 C=43  
+    1016 CALL      A=41 B=2  C=2     -- call(args=2, rets=2)
+    1017 NEWTABLE  A=41 B=0  C=0   
+    1018 GETTABUP  A=42 B=0  C=341  ; "HashMap"  -- _ENV lookup
+    1019 GETTABLE  A=42 B=42 C=341  ; "HashMap"  -- get
+    1020 MOVE      A=43 B=41 C=0   
+    1021 CALL      A=42 B=2  C=1     -- call(args=2, rets=1)
+    1022 MOVE      A=40 B=41 C=0   
+    1023 MOVE      A=42 B=40 C=0   
+    1024 GETTABLE  A=43 B=42 C=342  ; "put"  -- get
+    1025 MOVE      A=44 B=42 C=0   
+    1026 LOADK     A=45 Bx=158 
+    1027 MOVE      A=46 B=36 C=0   
+    1028 GETTABLE  A=47 B=46 C=335  ; "size"  -- get
+    1029 MOVE      A=48 B=46 C=0   
+    1030 CALL      A=47 B=2  C=2     -- call(args=2, rets=2)
+    1031 MOVE      A=46 B=47 C=0   
+    1032 CALL      A=43 B=4  C=2     -- call(args=4, rets=2)
+    1033 MOVE      A=43 B=40 C=0   
+    1034 GETTABLE  A=44 B=43 C=342  ; "put"  -- get
+    1035 MOVE      A=45 B=43 C=0   
+    1036 LOADK     A=46 Bx=125 
+    1037 MOVE      A=47 B=38 C=0   
+    1038 CALL      A=44 B=4  C=2     -- call(args=4, rets=2)
+    1039 MOVE      A=44 B=40 C=0   
+    1040 GETTABLE  A=45 B=44 C=342  ; "put"  -- get
+    1041 MOVE      A=46 B=44 C=0   
+    1042 LOADK     A=47 Bx=159 
+    1043 LOADK     A=48 Bx=37  
+    1044 CALL      A=45 B=4  C=2     -- call(args=4, rets=2)
+    1045 MOVE      A=45 B=40 C=0   
+    1046 GETTABLE  A=46 B=45 C=342  ; "put"  -- get
+    1047 MOVE      A=47 B=45 C=0   
+    1048 LOADK     A=48 Bx=154 
+    1049 LOADK     A=49 Bx=22  
+    1050 CALL      A=46 B=4  C=2     -- call(args=4, rets=2)
+    1051 NEWTABLE  A=46 B=0  C=0   
+    1052 GETTABUP  A=47 B=0  C=357  ; "StringBuilder"  -- _ENV lookup
+    1053 GETTABLE  A=47 B=47 C=357  ; "StringBuilder"  -- get
+    1054 MOVE      A=48 B=46 C=0   
+    1055 CALL      A=47 B=2  C=1     -- call(args=2, rets=1)
+    1056 MOVE      A=41 B=46 C=0   
+    1057 MOVE      A=47 B=41 C=0   
+    1058 GETTABLE  A=48 B=47 C=358  ; "append"  -- get
+    1059 MOVE      A=49 B=47 C=0   
+    1060 LOADK     A=50 Bx=160 
+    1061 CALL      A=48 B=3  C=2     -- call(args=3, rets=2)
+    1062 MOVE      A=48 B=41 C=0   
+    1063 GETTABLE  A=49 B=48 C=358  ; "append"  -- get
+    1064 MOVE      A=50 B=48 C=0   
+    1065 MOVE      A=51 B=40 C=0   
+    1066 GETTABLE  A=52 B=51 C=337  ; "get"  -- get
+    1067 MOVE      A=53 B=51 C=0   
+    1068 LOADK     A=54 Bx=158 
+    1069 CALL      A=52 B=3  C=2     -- call(args=3, rets=2)
+    1070 MOVE      A=51 B=52 C=0   
+    1071 LOADK     A=52 Bx=4   
+    1072 CONCAT    A=51 B=51 C=52  
+    1073 CALL      A=49 B=3  C=2     -- call(args=3, rets=2)
+    1074 MOVE      A=49 B=41 C=0   
+    1075 GETTABLE  A=50 B=49 C=358  ; "append"  -- get
+    1076 MOVE      A=51 B=49 C=0   
+    1077 LOADK     A=52 Bx=161 
+    1078 CALL      A=50 B=3  C=2     -- call(args=3, rets=2)
+    1079 MOVE      A=50 B=41 C=0   
+    1080 GETTABLE  A=51 B=50 C=358  ; "append"  -- get
+    1081 MOVE      A=52 B=50 C=0   
+    1082 MOVE      A=53 B=40 C=0   
+    1083 GETTABLE  A=54 B=53 C=337  ; "get"  -- get
+    1084 MOVE      A=55 B=53 C=0   
+    1085 LOADK     A=56 Bx=125 
+    1086 CALL      A=54 B=3  C=2     -- call(args=3, rets=2)
+    1087 MOVE      A=53 B=54 C=0   
+    1088 LOADK     A=54 Bx=4   
+    1089 CONCAT    A=53 B=53 C=54  
+    1090 CALL      A=51 B=3  C=2     -- call(args=3, rets=2)
+    1091 MOVE      A=51 B=41 C=0   
+    1092 GETTABLE  A=52 B=51 C=358  ; "append"  -- get
+    1093 MOVE      A=53 B=51 C=0   
+    1094 LOADK     A=54 Bx=162 
+    1095 CALL      A=52 B=3  C=2     -- call(args=3, rets=2)
+    1096 MOVE      A=52 B=41 C=0   
+    1097 GETTABLE  A=53 B=52 C=358  ; "append"  -- get
+    1098 MOVE      A=54 B=52 C=0   
+    1099 MOVE      A=55 B=40 C=0   
+    1100 GETTABLE  A=56 B=55 C=337  ; "get"  -- get
+    1101 MOVE      A=57 B=55 C=0   
+    1102 LOADK     A=58 Bx=159 
+    1103 CALL      A=56 B=3  C=2     -- call(args=3, rets=2)
+    1104 MOVE      A=55 B=56 C=0   
+    1105 LOADK     A=56 Bx=4   
+    1106 CONCAT    A=55 B=55 C=56  
+    1107 CALL      A=53 B=3  C=2     -- call(args=3, rets=2)
+    1108 MOVE      A=53 B=41 C=0   
+    1109 GETTABLE  A=54 B=53 C=358  ; "append"  -- get
+    1110 MOVE      A=55 B=53 C=0   
+    1111 LOADK     A=56 Bx=163 
+    1112 CALL      A=54 B=3  C=2     -- call(args=3, rets=2)
+    1113 MOVE      A=54 B=41 C=0   
+    1114 GETTABLE  A=55 B=54 C=358  ; "append"  -- get
+    1115 MOVE      A=56 B=54 C=0   
+    1116 MOVE      A=57 B=40 C=0   
+    1117 GETTABLE  A=58 B=57 C=337  ; "get"  -- get
+    1118 MOVE      A=59 B=57 C=0   
+    1119 LOADK     A=60 Bx=154 
+    1120 CALL      A=58 B=3  C=2     -- call(args=3, rets=2)
+    1121 MOVE      A=57 B=58 C=0   
+    1122 LOADK     A=58 Bx=4   
+    1123 CONCAT    A=57 B=57 C=58  
+    1124 CALL      A=55 B=3  C=2     -- call(args=3, rets=2)
+    1125 MOVE      A=55 B=41 C=0   
+    1126 GETTABLE  A=56 B=55 C=358  ; "append"  -- get
+    1127 MOVE      A=57 B=55 C=0   
+    1128 LOADK     A=58 Bx=164 
+    1129 CALL      A=56 B=3  C=2     -- call(args=3, rets=2)
+    1130 GETTABUP  A=56 B=0  C=256  ; "System"  -- _ENV lookup
+    1131 GETTABLE  A=56 B=56 C=257  ; "out"  -- get
+    1132 GETTABLE  A=57 B=56 C=258  ; "println"  -- get
+    1133 MOVE      A=58 B=41 C=0   
+    1134 GETTABLE  A=59 B=58 C=363  ; "toString"  -- get
+    1135 MOVE      A=60 B=58 C=0   
+    1136 CALL      A=59 B=2  C=2     -- call(args=2, rets=2)
+    1137 MOVE      A=58 B=59 C=0   
+    1138 CALL      A=57 B=2  C=2     -- call(args=2, rets=2)
+    1139 LOADK     A=42 Bx=58  
+    1140 MOVE      A=57 B=40 C=0   
+    1141 GETTABLE  A=58 B=57 C=337  ; "get"  -- get
+    1142 MOVE      A=59 B=57 C=0   
+    1143 LOADK     A=60 Bx=125 
+    1144 CALL      A=58 B=3  C=2     -- call(args=3, rets=2)
+    1145 EQ        A=1  B=58 C=274 
+    1146 JMP       A=0  sBx=9   
+    1147 GETTABUP  A=57 B=0  C=412  ; "Integer"  -- _ENV lookup
+    1148 MOVE      A=58 B=40 C=0   
+    1149 GETTABLE  A=59 B=58 C=337  ; "get"  -- get
+    1150 MOVE      A=60 B=58 C=0   
+    1151 LOADK     A=61 Bx=125 
+    1152 CALL      A=59 B=3  C=2     -- call(args=3, rets=2)
+    1153 MOVE      A=58 B=59 C=0   
+    1154 CALL      A=57 B=2  C=2     -- call(args=2, rets=2)
+    1155 MOVE      A=42 B=57 C=0   
+    1156 EQ        A=1  B=42 C=421  ; 55
+    1157 JMP       A=0  sBx=1   
+    1158 LOADBOOL  A=57 B=0  C=1   
+    1159 LOADBOOL  A=57 B=1  C=0   
+    1160 MOVE      A=43 B=57 C=0   
+    1161 GETTABUP  A=58 B=0  C=256  ; "System"  -- _ENV lookup
+    1162 GETTABLE  A=58 B=58 C=257  ; "out"  -- get
+    1163 GETTABLE  A=59 B=58 C=258  ; "println"  -- get
+    1164 LOADK     A=60 Bx=166 
+    1165 MOVE      A=61 B=43 C=0   
+    1166 CONCAT    A=60 B=60 C=61  
+    1167 CALL      A=59 B=2  C=2     -- call(args=2, rets=2)
+    1168 GETTABUP  A=59 B=0  C=256  ; "System"  -- _ENV lookup
+    1169 GETTABLE  A=59 B=59 C=257  ; "out"  -- get
+    1170 GETTABLE  A=60 B=59 C=258  ; "println"  -- get
+    1171 LOADK     A=61 Bx=4   
+    1172 CALL      A=60 B=2  C=2     -- call(args=2, rets=2)
+    1173 GETTABUP  A=60 B=0  C=256  ; "System"  -- _ENV lookup
+    1174 GETTABLE  A=60 B=60 C=257  ; "out"  -- get
+    1175 GETTABLE  A=61 B=60 C=258  ; "println"  -- get
+    1176 LOADK     A=62 Bx=167 
+    1177 CALL      A=61 B=2  C=2     -- call(args=2, rets=2)
+    1178 RETURN    A=0  B=1  C=0   
+  --- End bytecode dump ---
+Class loaded successfully!
+  _ENV['add'] type: function
+  _ENV['sum'] type: function
+Methods: main, factorial, TITLE, Status
+Calling main()...
+=== Comprehensive Demo ===
+
+int    = 42
+double = 3.14159
+bool   = true
+String = Hello
+char   = 65
+hex    = 255
+null check: nothing is NOT null
+
+--- Operators ---
+10 + 3   = 13
+10 - 3   = 7
+10 * 3   = 30
+10 / 3   = 3.3333333333333
+10 % 3   = 1
+true && false = false
+true || false = true
+!true         = false
+10 > 3        = true
+10 == 3       = false
+10 != 3       = true
+5 += 3  = 8
+z++     = 9
+
+--- If/Else ---
+Grade: B
+
+--- Switch ---
+Wednesday
+
+--- For Loop ---
+Sum 1..10 = 55
+
+--- While Loop ---
+5 4 3 2 1 Go!
+
+--- Do-While ---
+do-while result: 30
+
+--- Array ---
+Array sum = 150
+
+--- ArrayList ---
+size: 4
+fruits[1] = Banana
+fruits[3] = Date
+
+--- For-Each ---
+Apple Banana Cherry Date 
+
+--- HashMap ---
+Alice   = 30
+Bob     = 25
+Charlie = 35
+size    = 3
+has Bob? true
+has Eve? false
+
+--- StringBuilder ---
+SB toString: Hello, World!
+
+--- Enum ---
+PENDING = 0
+ACTIVE  = 1
+DONE    = 2
+
+--- Static Methods ---
+15 + 27 = 42
+PI = 3.14159
+MAX_SCORE = 100
+sum(1,2,3) = 6
+sum(10,20,30,40,50) = 150
+doubleAndIncrement(5) = 11
+
+--- Recursion ---
+5! = 120
+10! = 3628800
+
+--- Objects ---
+Alice (30)
+Bob (25)
+after birthday: Alice (31)
+Alice age = 31
+Bob name  = Bob
+
+--- Math ---
+ceil(3.14)  = 3
+floor(3.14) = 4
+abs(-42)    = 42
+max(10,20)  = 20
+
+--- Integration ---
+Total of 1..10 = 55
+Stats: [count=10, sum=55, min=1, max=10]
+Sum check (55 == 55)? true
+
+=== ALL FEATURES DEMO COMPLETE ===
+
+=== Results: 1 passed, 0 failed ===
+
+=== Done ===

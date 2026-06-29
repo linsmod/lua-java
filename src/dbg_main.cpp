@@ -99,6 +99,28 @@ static std::map<std::string, std::set<int>> g_breakpoints;
 static std::string g_cur_source;
 static int         g_cur_line = -1;
 
+/* Locals/upvalues cache — captured once on pause, never queried from
+ * the yielded coroutine on subsequent frames (avoids stack corruption). */
+struct LocalEntry {
+    std::string name;
+    std::string value;
+};
+static std::vector<LocalEntry> g_locals_cache;
+static std::vector<LocalEntry> g_upvals_cache;
+
+/* Call stack cache — captured once on pause */
+struct StackEntry {
+    std::string name;
+    std::string source;
+    int         line;
+};
+static std::vector<StackEntry> g_callstack_cache;
+
+/* Bytecode view cache — captured once on pause (Proto* is safe: GC stopped) */
+static const void *g_bytecode_proto = nullptr;
+static int         g_bytecode_curpc = -1;
+static const void *g_bytecode_ci    = nullptr;  /* to validate cache validity */
+
 /* Loaded source file cache: filename → vector of lines */
 static std::map<std::string, std::vector<std::string>> g_sources;
 
@@ -233,6 +255,93 @@ static void toggle_breakpoint(const char *source, int line) {
 }
 
 /* ============================================================
+ *  Snapshot locals & upvalues (called once from debug_hook
+ *  before yielding — never from the main-loop draw functions)
+ * ============================================================ */
+static const char *lua_val_tostring(lua_State *L, int idx, char *buf, size_t bufsz) {
+    int t = lua_type(L, idx);
+    switch (t) {
+    case LUA_TNIL:        return "nil";
+    case LUA_TBOOLEAN:    return lua_toboolean(L, idx) ? "true" : "false";
+    case LUA_TNUMBER:
+        if (lua_isinteger(L, idx))
+            snprintf(buf, bufsz, "%lld", (long long)lua_tointeger(L, idx));
+        else
+            snprintf(buf, bufsz, "%g", lua_tonumber(L, idx));
+        return buf;
+    case LUA_TSTRING:     snprintf(buf, bufsz, "\"%s\"", lua_tostring(L, idx)); return buf;
+    case LUA_TTABLE:      snprintf(buf, bufsz, "table(%p)", lua_topointer(L, idx)); return buf;
+    case LUA_TFUNCTION:
+        if (lua_iscfunction(L, idx))
+            snprintf(buf, bufsz, "function(C:%p)", lua_topointer(L, idx));
+        else
+            snprintf(buf, bufsz, "function(%p)", lua_topointer(L, idx));
+        return buf;
+    case LUA_TUSERDATA:   snprintf(buf, bufsz, "userdata(%p)", lua_topointer(L, idx)); return buf;
+    case LUA_TTHREAD:     snprintf(buf, bufsz, "thread(%p)", lua_topointer(L, idx)); return buf;
+    default:              snprintf(buf, bufsz, "type:%d", t); return buf;
+    }
+}
+
+static void snapshot_locals(lua_State *L, lua_Debug *ar) {
+    g_locals_cache.clear();
+    g_upvals_cache.clear();
+
+    char valbuf[512];
+
+    /* Locals */
+    for (int i = 1; ; i++) {
+        const char *name = lua_getlocal(L, ar, i);
+        if (!name) break;
+        const char *val = lua_val_tostring(L, -1, valbuf, sizeof(valbuf));
+        g_locals_cache.push_back({name, val});
+        lua_pop(L, 1);
+    }
+
+    /* Upvalues */
+    lua_getinfo(L, "f", ar);
+    int func_idx = lua_gettop(L);
+    for (int i = 1; ; i++) {
+        const char *name = lua_getupvalue(L, func_idx, i);
+        if (!name) break;
+        const char *val = lua_val_tostring(L, -1, valbuf, sizeof(valbuf));
+        g_upvals_cache.push_back({name, val});
+        lua_pop(L, 1);
+    }
+    lua_pop(L, 1);  /* pop function */
+}
+
+static void snapshot_callstack(lua_State *L) {
+    g_callstack_cache.clear();
+
+    lua_Debug ar;
+    for (int level = 0; lua_getstack(L, level, &ar); level++) {
+        lua_getinfo(L, "nSl", &ar);
+        g_callstack_cache.push_back({
+            ar.name ? ar.name : "?",
+            ar.short_src[0] ? ar.short_src : "?",
+            ar.currentline
+        });
+    }
+}
+
+static void snapshot_bytecode(lua_State *L) {
+    g_bytecode_proto = nullptr;
+    g_bytecode_curpc = -1;
+    g_bytecode_ci    = nullptr;
+
+    if (!L->ci || !isLua(L->ci)) return;
+    g_bytecode_ci = L->ci;
+
+    LClosure *cl = clLvalue(L->ci->func);
+    const Proto *p = cl->p;
+    g_bytecode_proto = p;
+
+    int curpc = (int)(L->ci->u.l.savedpc - p->code) - 1;
+    g_bytecode_curpc = curpc;
+}
+
+/* ============================================================
  *  Lua debug hook – called on every source line
  * ============================================================ */
 static void debug_hook(lua_State *L, lua_Debug *ar) {
@@ -316,6 +425,13 @@ static void debug_hook(lua_State *L, lua_Debug *ar) {
 
     /* Yield if paused (inside coroutine) */
     if (g_dbg_state == DBG_PAUSED) {
+        /* Snapshot locals & callstack once before yielding — draw functions
+         * read from cache so the yielded coroutine's stack is never touched
+         * during rendering (avoids heap-buffer-overflow / use-after-free). */
+        lua_getstack(L, 0, ar);  /* ensure ar->i_ci is valid */
+        snapshot_locals(L, ar);
+        snapshot_callstack(L);
+        snapshot_bytecode(L);
         lua_yield(L, 0);
     }
 }
@@ -377,9 +493,9 @@ static bool dbg_load_script(const char *filename) {
     /* If "break on main" is enabled, pause on first executable line */
     g_pause_on_entry = g_break_on_main;
 
-    /* Set the debug hook on the coroutine */
+    /* Set the debug hook on the coroutine (LINE only to avoid flooding locals) */
     lua_sethook(g_co, debug_hook,
-                LUA_MASKLINE | LUA_MASKCALL | LUA_MASKRET, 0);
+                LUA_MASKLINE, 0);
 
     g_dbg_state = DBG_RUNNING;
     g_cur_source.clear();
@@ -648,28 +764,14 @@ static void draw_bytecode_view() {
         return;
     }
 
-    lua_Debug ar;
-    if (!lua_getstack(g_co, 0, &ar)) {
-        ImGui::TextDisabled("No stack frame.");
-        ImGui::End();
-        return;
-    }
-    lua_getinfo(g_co, "f", &ar);
-    StkId func = g_co->ci->func;
-    if (!ttisLclosure(func)) {
-        ImGui::TextDisabled("Not a Lua function (C function).");
+    if (!g_bytecode_proto) {
+        ImGui::TextDisabled("No Lua function at current frame.");
         ImGui::End();
         return;
     }
 
-    LClosure *cl = clLvalue(func);
-    const Proto *p = cl->p;
-
-    /* Get current PC */
-    int curpc = -1;
-    if (isLua(g_co->ci)) {
-        curpc = (int)(g_co->ci->u.l.savedpc - p->code) - 1;
-    }
+    const Proto *p = (const Proto *)g_bytecode_proto;
+    int curpc = g_bytecode_curpc;
 
     ImGui::Text("Proto: %p  params=%d  stack=%d  code=%d  consts=%d  protos=%d",
                 (void*)p, p->numparams, p->maxstacksize,
@@ -784,19 +886,12 @@ static void draw_call_stack() {
         return;
     }
 
-    lua_Debug ar;
     int level = 0;
-    while (lua_getstack(g_co, level, &ar)) {
-        lua_getinfo(g_co, "nSl", &ar);
-        const char *name = ar.name ? ar.name : "?";
-        const char *src  = ar.short_src[0] ? ar.short_src : "?";
-        int line = ar.currentline;
-
+    for (auto &e : g_callstack_cache) {
         ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f),
                            "[%d] ", level);
         ImGui::SameLine();
-        ImGui::Text("%s  (%s:%d)", name, src, line);
-
+        ImGui::Text("%s  (%s:%d)", e.name.c_str(), e.source.c_str(), e.line);
         level++;
     }
 
@@ -804,57 +899,13 @@ static void draw_call_stack() {
 }
 
 /* ============================================================
- *  UI: Local Variables
+ *  UI: Local Variables  (reads from cache — never touches g_co)
  * ============================================================ */
-static const char *lua_val_tostring(lua_State *L, int idx, char *buf, size_t bufsz) {
-    int t = lua_type(L, idx);
-    switch (t) {
-    case LUA_TNIL:
-        return "nil";
-    case LUA_TBOOLEAN:
-        return lua_toboolean(L, idx) ? "true" : "false";
-    case LUA_TNUMBER:
-        if (lua_isinteger(L, idx))
-            snprintf(buf, bufsz, "%lld", (long long)lua_tointeger(L, idx));
-        else
-            snprintf(buf, bufsz, "%g", lua_tonumber(L, idx));
-        return buf;
-    case LUA_TSTRING:
-        snprintf(buf, bufsz, "\"%s\"", lua_tostring(L, idx));
-        return buf;
-    case LUA_TTABLE:
-        snprintf(buf, bufsz, "table(%p)", lua_topointer(L, idx));
-        return buf;
-    case LUA_TFUNCTION:
-        if (lua_iscfunction(L, idx))
-            snprintf(buf, bufsz, "function(C:%p)", lua_topointer(L, idx));
-        else
-            snprintf(buf, bufsz, "function(%p)", lua_topointer(L, idx));
-        return buf;
-    case LUA_TUSERDATA:
-        snprintf(buf, bufsz, "userdata(%p)", lua_topointer(L, idx));
-        return buf;
-    case LUA_TTHREAD:
-        snprintf(buf, bufsz, "thread(%p)", lua_topointer(L, idx));
-        return buf;
-    default:
-        snprintf(buf, bufsz, "type:%d", t);
-        return buf;
-    }
-}
-
 static void draw_locals() {
     ImGui::Begin("Locals");
 
     if (!g_co || g_dbg_state != DBG_PAUSED) {
         ImGui::TextDisabled("(not paused)");
-        ImGui::End();
-        return;
-    }
-
-    lua_Debug ar;
-    if (!lua_getstack(g_co, 0, &ar)) {
-        ImGui::TextDisabled("No stack frame.");
         ImGui::End();
         return;
     }
@@ -867,49 +918,30 @@ static void draw_locals() {
     ImGui::NextColumn();
     ImGui::Separator();
 
-    char valbuf[512];
-    for (int i = 1; ; i++) {
-        const char *name = lua_getlocal(g_co, &ar, i);
-        if (!name) break;
-
-        ImGui::TextUnformatted(name);
+    for (auto &e : g_locals_cache) {
+        ImGui::TextUnformatted(e.name.c_str());
         ImGui::NextColumn();
-
-        const char *val = lua_val_tostring(g_co, -1, valbuf, sizeof(valbuf));
-        ImGui::TextUnformatted(val);
+        ImGui::TextUnformatted(e.value.c_str());
         ImGui::NextColumn();
-
-        lua_pop(g_co, 1);  /* pop value */
     }
 
     /* Upvalues */
-    ImGui::Separator();
-    ImGui::NextColumn();
-    ImGui::NextColumn();
-    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.4f, 1.0f), "Upvalues");
-    ImGui::NextColumn();
-    ImGui::NextColumn();
-    ImGui::Separator();
-
-    /* Get the current function */
-    lua_getinfo(g_co, "f", &ar);
-    int func_idx = lua_gettop(g_co);  /* stack index of function */
-
-    for (int i = 1; ; i++) {
-        const char *name = lua_getupvalue(g_co, func_idx, i);
-        if (!name) break;
-
-        ImGui::TextUnformatted(name);
+    if (!g_upvals_cache.empty()) {
+        ImGui::Separator();
         ImGui::NextColumn();
-
-        const char *val = lua_val_tostring(g_co, -1, valbuf, sizeof(valbuf));
-        ImGui::TextUnformatted(val);
         ImGui::NextColumn();
+        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.4f, 1.0f), "Upvalues");
+        ImGui::NextColumn();
+        ImGui::NextColumn();
+        ImGui::Separator();
 
-        lua_pop(g_co, 1);  /* pop value */
+        for (auto &e : g_upvals_cache) {
+            ImGui::TextUnformatted(e.name.c_str());
+            ImGui::NextColumn();
+            ImGui::TextUnformatted(e.value.c_str());
+            ImGui::NextColumn();
+        }
     }
-
-    lua_pop(g_co, 1);  /* pop function */
 
     ImGui::Columns(1);
     ImGui::End();
@@ -1027,15 +1059,7 @@ static void draw_main_menu() {
             }
             if (ImGui::MenuItem("Reload", "Ctrl+R", false,
                                 strlen(g_filepath_buf) > 0)) {
-                dbg_stop();
-                if (g_mainL) {
-                    g_co = lua_newthread(g_mainL);
-                    lua_pushvalue(g_mainL, -1);
-                    lua_setfield(g_mainL, LUA_REGISTRYINDEX, "_dbg_co");
-                    lua_pop(g_mainL, 1);
-                    lua_sethook(g_co, debug_hook,
-                                LUA_MASKLINE | LUA_MASKCALL | LUA_MASKRET, 0);
-                }
+                dbg_stop();  /* dbg_stop already creates a new thread */
                 dbg_load_script(g_filepath_buf);
             }
             /* Recent Files */
@@ -1051,17 +1075,7 @@ static void draw_main_menu() {
                     if (ImGui::MenuItem(label, nullptr, false, true)) {
                         snprintf(g_filepath_buf, sizeof(g_filepath_buf),
                                  "%s", it->c_str());
-                        dbg_stop();
-                        if (g_mainL) {
-                            g_co = lua_newthread(g_mainL);
-                            lua_pushvalue(g_mainL, -1);
-                            lua_setfield(g_mainL, LUA_REGISTRYINDEX,
-                                         "_dbg_co");
-                            lua_pop(g_mainL, 1);
-                            lua_sethook(g_co, debug_hook,
-                                        LUA_MASKLINE | LUA_MASKCALL |
-                                        LUA_MASKRET, 0);
-                        }
+                        dbg_stop();  /* dbg_stop already creates a new thread */
                         dbg_load_script(it->c_str());
                     }
                     if (ImGui::IsItemHovered())
@@ -1136,15 +1150,7 @@ static void draw_main_menu() {
             if (ImGui::IsKeyPressed(ImGuiKey_R) &&
                 ImGui::IsKeyDown(ImGuiKey_LeftCtrl) &&
                 strlen(g_filepath_buf) > 0) {
-                dbg_stop();
-                if (g_mainL) {
-                    g_co = lua_newthread(g_mainL);
-                    lua_pushvalue(g_mainL, -1);
-                    lua_setfield(g_mainL, LUA_REGISTRYINDEX, "_dbg_co");
-                    lua_pop(g_mainL, 1);
-                    lua_sethook(g_co, debug_hook,
-                                LUA_MASKLINE | LUA_MASKCALL | LUA_MASKRET, 0);
-                }
+                dbg_stop();  /* dbg_stop already creates a new thread */
                 dbg_load_script(g_filepath_buf);
             }
         }
