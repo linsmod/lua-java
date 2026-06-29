@@ -6,7 +6,7 @@ public class TestInstance {
     }
 
     public void hello() {
-        // System.out.println("Hello from instance method");
+        System.out.println("Hello from instance method");
     }
 
     public static void main(String[] args) {

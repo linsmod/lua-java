@@ -342,7 +342,7 @@ static void simpleexpr(JLexState *ls, expdesc *v) {
       luaK_codeABC(ls->fs, OP_NEWTABLE, reg, 0, 0);
       ls->fs->freereg = reg + 1;
 
-      /* parse constructor args */
+      /* parse constructor args first (at reg+1..reg+nargs) */
       check(ls, '('); next(ls);
       int nargs = 0;
       if (ls->t.token != ')') {
@@ -359,12 +359,18 @@ static void simpleexpr(JLexState *ls, expdesc *v) {
       }
       check(ls, ')'); next(ls);
 
-      /* Compute ctor register.  Args are currently at reg+1..reg+nargs
-       * but CALL expects them contiguously after ctor_reg.  Relocate. */
+      /* Reserve space for ctor call setup:
+       *   ctor_reg = reg + nargs + 1  (one past args)
+       *   self     = ctor_reg + 1
+       *   args     = ctor_reg + 2 .. + 2 + nargs - 1
+       * Then metatable temps go above that:
+       *   cls_reg  = reg + 2*nargs + 3  (or just after ctor args)
+       * We'll compute base of temp area after nargs is known.
+       */
       {
         int ctor_reg = reg + nargs + 1;
-        /* Need room: ctor_reg (1) + self (1) + nargs args */
-        ls->fs->freereg = ctor_reg + nargs + 2;
+        int tmp_base = ctor_reg + nargs + 2;  /* after self + args */
+        ls->fs->freereg = tmp_base + 4;       /* need 4 temps for metatable */
 
         /* Look up class table and constructor */
         int k = luaK_stringK(ls->fs, cname);
@@ -379,8 +385,36 @@ static void simpleexpr(JLexState *ls, expdesc *v) {
           }
         }
 
+        /* Set up metatable on the new object BEFORE ctor call:
+         *   local mt = {__index = _ENV[cname]}
+         *   _setmetatable(obj, mt)
+         */
+        int cls_reg = tmp_base + 0;
+        int mt_reg  = tmp_base + 1;
+        int smt_reg = tmp_base + 2;
+
+        /* R(cls_reg) = _ENV[cname] — get the class table */
+        int kc = luaK_stringK(ls->fs, cname);
+        luaK_codeABC(ls->fs, OP_GETTABUP, cls_reg, 0, (unsigned int)(kc | BITRK));
+
+        /* R(mt_reg) = {} — create metatable */
+        luaK_codeABC(ls->fs, OP_NEWTABLE, mt_reg, 0, 0);
+
+        /* mt.__index = class_table */
+        int ki = luaK_stringK(ls->fs, luaS_newliteral(ls->L, "__index"));
+        luaK_codeABC(ls->fs, OP_SETTABLE, mt_reg, (unsigned int)(ki | BITRK), cls_reg);
+
+        /* R(smt_reg) = _ENV["_setmetatable"] */
+        int ks = luaK_stringK(ls->fs, luaS_newliteral(ls->L, "_setmetatable"));
+        luaK_codeABC(ls->fs, OP_GETTABUP, smt_reg, 0, (unsigned int)(ks | BITRK));
+
+        /* Call _setmetatable(obj, mt) */
+        luaK_codeABC(ls->fs, OP_MOVE, tmp_base + 3, reg, 0);   /* self */
+        luaK_codeABC(ls->fs, OP_MOVE, tmp_base + 4, mt_reg, 0); /* mt */
+        luaK_codeABC(ls->fs, OP_CALL, smt_reg, 3, 1);
+
         /* call constructor: R(ctor_reg)(self, arg1, ...).
-         * Constructor sets metatable on self. Object already at 'reg'. */
+         * Object already at 'reg' with metatable set. */
         luaK_codeABC(ls->fs, OP_CALL, ctor_reg, nargs + 2, 1);
         ls->fs->freereg = reg + 1;
       }
@@ -1601,33 +1635,6 @@ static int method_definition(JLexState *ls, FuncState *fs, int class_reg,
 
   /* parse body or skip abstract/native */
   if (ls->t.token == '{') {
-    /* For custom constructors: inject metatable setup code
-     * before the user's constructor body, so the resulting
-     * object has __index → class_table for method dispatch. */
-    if (is_ctor) {
-      int base = ls->fs->freereg;  /* start of temp registers */
-      /* R(base) = _ENV[ClassName] — get the class table */
-      int kc = luaK_stringK(ls->fs, class_name);
-      luaK_codeABC(ls->fs, OP_GETTABUP, base, 0, (unsigned int)(kc | BITRK));
-      /* R(base+1) = {} — create metatable */
-      luaK_codeABC(ls->fs, OP_NEWTABLE, base + 1, 0, 0);
-      /* mt.__index = class_table */
-      int ki = luaK_stringK(ls->fs, luaS_newliteral(ls->L, "__index"));
-      luaK_codeABC(ls->fs, OP_SETTABLE, base + 1, (unsigned int)(ki | BITRK), base);
-      /* R(base+2) = _ENV["_setmetatable"] */
-      int ks = luaK_stringK(ls->fs, luaS_newliteral(ls->L, "_setmetatable"));
-      luaK_codeABC(ls->fs, OP_GETTABUP, base + 2, 0, (unsigned int)(ks | BITRK));
-      /* R(base+3) = self (R0) */
-      luaK_codeABC(ls->fs, OP_MOVE, base + 3, 0, 0);
-      /* R(base+4) = mt (R(base+1)) */
-      luaK_codeABC(ls->fs, OP_MOVE, base + 4, base + 1, 0);
-      /* Call _setmetatable(R(base+3), R(base+4)) */
-      luaK_codeABC(ls->fs, OP_CALL, base + 2, 3, 1);
-      /* After call only self (R0) + explicit params survive.
-       * Reset freereg to just after params. The constructor body
-       * will re-allocate from there. */
-      ls->fs->freereg = nparams;
-    }
     block(ls);
   } else if (ls->t.token == ';') {
     next(ls); /* abstract or interface method */
@@ -1636,6 +1643,8 @@ static int method_definition(JLexState *ls, FuncState *fs, int class_reg,
     return is_ctor;
   }
 
+  /* Save peak register count before leaveblock resets freereg */
+  lu_byte maxreg = ls->fs->freereg;
   luaK_ret(ls->fs, 0, 0);
   leaveblock(ls->fs);
 
@@ -1647,7 +1656,7 @@ static int method_definition(JLexState *ls, FuncState *fs, int class_reg,
   method_fs.f->sizeupvalues = method_fs.nups;
   method_fs.f->linedefined = method_start_line;
   method_fs.f->lastlinedefined = ls->linenumber;
-  method_fs.f->maxstacksize = method_fs.freereg;
+  method_fs.f->maxstacksize = maxreg;
   if ((int)method_fs.f->maxstacksize < (int)nparams)
       method_fs.f->maxstacksize = (lu_byte)nparams;
   method_fs.f->numparams = (lu_byte)nparams;  /* already set above, but ensure consistency */
@@ -1885,35 +1894,6 @@ static void class_definition(JLexState *ls, FuncState *fs) {
     /* 'this' param at R0 */
     new_localvar(ls->fs, luaS_newliteral(ls->L, "this"));
 
-    /* Set up metatable on self inside the constructor:
-     *   local mt = {__index = _ENV[ClassName]}
-     *   _setmetatable(self, mt)
-     * Uses registers 1..5 as temporaries. */
-    {
-      /* R1 = _ENV[ClassName] — get the class table */
-      int kc = luaK_stringK(ls->fs, class_name);
-      luaK_codeABC(ls->fs, OP_GETTABUP, 1, 0, (unsigned int)(kc | BITRK));
-
-      /* R2 = {} — create metatable */
-      luaK_codeABC(ls->fs, OP_NEWTABLE, 2, 0, 0);
-
-      /* mt.__index = class_table */
-      int ki = luaK_stringK(ls->fs, luaS_newliteral(ls->L, "__index"));
-      luaK_codeABC(ls->fs, OP_SETTABLE, 2, (unsigned int)(ki | BITRK), 1);
-
-      /* R3 = _ENV["_setmetatable"] */
-      int ks = luaK_stringK(ls->fs, luaS_newliteral(ls->L, "_setmetatable"));
-      luaK_codeABC(ls->fs, OP_GETTABUP, 3, 0, (unsigned int)(ks | BITRK));
-
-      /* Call _setmetatable(self, mt): args at R4, R5 */
-      luaK_codeABC(ls->fs, OP_MOVE, 4, 0, 0);  /* R4 = self (R0) */
-      luaK_codeABC(ls->fs, OP_MOVE, 5, 2, 0);  /* R5 = mt (R2) */
-      luaK_codeABC(ls->fs, OP_CALL, 3, 3, 1);  /* _setmetatable(R4, R5), 0 results */
-
-      /* Only R0 (self) is alive after the call */
-      ls->fs->freereg = 1;
-    }
-
     luaK_ret(ls->fs, 0, 0);
     leaveblock(ls->fs);
 
@@ -1925,7 +1905,9 @@ static void class_definition(JLexState *ls, FuncState *fs) {
     ctor_fs.f->sizeupvalues = ctor_fs.nups;
     ctor_fs.f->linedefined = ctor_start_line;
     ctor_fs.f->lastlinedefined = ls->linenumber;
-    ctor_fs.f->maxstacksize = ctor_fs.freereg > 6 ? ctor_fs.freereg : 6;
+    ctor_fs.f->maxstacksize = ctor_fs.freereg;
+    if ((int)ctor_fs.f->maxstacksize < (int)ctor_fs.f->numparams)
+        ctor_fs.f->maxstacksize = ctor_fs.f->numparams;
 
     /* Register proto in parent */
     int proto_idx = saved_fs->np;
