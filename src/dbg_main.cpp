@@ -662,13 +662,17 @@ static void debug_hook(lua_State *L, lua_Debug *ar) {
     case DBG_STEPPING:
         switch (g_step_mode) {
         case STEP_OVER: {
-            /* Pause when we're back at the same or shallower depth */
-            lua_getinfo(L, "nSlt", ar);
-            /* Actually, simplest: pause on next line event at same depth */
-            (void)ar;
-            g_dbg_state = DBG_PAUSED;
-            g_cur_source = src_key;
-            g_cur_line   = line;
+            /* Pause at same/shallower depth, OR at any breakpoint deeper */
+            int depth = 0;
+            lua_Debug ar2;
+            for (int i = 0; lua_getstack(L, i, &ar2); i++) depth++;
+            if (depth <= g_step_target ||
+                is_breakpoint(src_key.c_str(), line) ||
+                is_breakpoint(src, line)) {
+                g_dbg_state = DBG_PAUSED;
+                g_cur_source = src_key;
+                g_cur_line   = line;
+            }
             break;
         }
         case STEP_INTO:
@@ -678,11 +682,13 @@ static void debug_hook(lua_State *L, lua_Debug *ar) {
             g_cur_line   = line;
             break;
         case STEP_OUT: {
-            /* Count current depth; pause when shallower */
+            /* Pause when shallower than target depth, OR at breakpoint */
             int depth = 0;
             lua_Debug ar2;
             for (int i = 0; lua_getstack(L, i, &ar2); i++) depth++;
-            if (depth < g_step_target) {
+            if (depth < g_step_target ||
+                is_breakpoint(src_key.c_str(), line) ||
+                is_breakpoint(src, line)) {
                 g_dbg_state = DBG_PAUSED;
                 g_cur_source = src_key;
                 g_cur_line   = line;
@@ -898,6 +904,11 @@ static void dbg_continue() {
 
 static void dbg_step_over() {
     if (g_dbg_state == DBG_PAUSED) {
+        /* Remember current stack depth; only pause at same or shallower depth */
+        int depth = 0;
+        lua_Debug ar;
+        for (int i = 0; lua_getstack(g_co, i, &ar); i++) depth++;
+        g_step_target = depth;
         g_dbg_state = DBG_STEPPING;
         g_step_mode = STEP_OVER;
     }

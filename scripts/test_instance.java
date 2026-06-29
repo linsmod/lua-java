@@ -10,10 +10,7 @@ public class TestInstance {
     }
 
     public static void main(String[] args) {
-        System.out.println("start");
         TestInstance t = new TestInstance("world");
-        System.out.println("created");
         t.hello();
-        System.out.println("done");
     }
 }
