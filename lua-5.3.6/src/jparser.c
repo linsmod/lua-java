@@ -55,9 +55,12 @@ static void enterblock(FuncState *fs, JBlockCnt *bl, lu_byte isloop) {
 static void leaveblock(FuncState *fs) {
   JBlockCnt *bl = (JBlockCnt*)fs->bl;
   fs->bl = (struct BlockCnt*)bl->previous;
-  /* Deactivate locals created in this block but keep freereg
-   * so maxstacksize accounts for all temporaries used. */
   fs->nactvar = bl->nactvar;
+  /* Release all temporary registers allocated inside the block.
+   * Local variables are deactivated (via nactvar) and their stack
+   * slots become free for reuse.  freereg must reflect this
+   * to prevent register pollution across block boundaries. */
+  fs->freereg = fs->nactvar;
 }
 
 /* ---- advance to next token ---- */
@@ -279,8 +282,28 @@ static void simpleexpr(JLexState *ls, expdesc *v) {
     }
     case '(': {
       next(ls);
-      expr(ls, v);
-      check(ls, ')'); next(ls);
+      /* Distinguish type-cast (int)expr from parenthesized (expr).
+       * Type-casts: token after '(' is a Java type keyword or a class name
+       * that is followed by ')' (making it a cast target). */
+      if (ls->t.token == TK_JAVA_INT || ls->t.token == TK_JAVA_DOUBLE ||
+          ls->t.token == TK_JAVA_BOOLEAN || ls->t.token == TK_JAVA_CHAR ||
+          ls->t.token == TK_JAVA_STRING || ls->t.token == TK_JAVA_VOID) {
+        /* Primitive type cast: just skip the type and parse the expression */
+        next(ls);  /* skip type keyword */
+        /* Skip any post-type modifiers: e.g. (int[]) */
+        while (ls->t.token == '[') {
+          next(ls);
+          check(ls, ']'); next(ls);
+        }
+        check(ls, ')'); next(ls);
+        /* In Lua, all values are dynamically typed — cast is a no-op.
+         * Just parse the expression naturally. */
+        expr(ls, v);
+      } else {
+        /* Parenthesized expression */
+        expr(ls, v);
+        check(ls, ')'); next(ls);
+      }
       break;
     }
     case '!': {
@@ -510,6 +533,44 @@ static void subexpr(JLexState *ls, expdesc *v, int limit) {
     luaK_codeABC(ls->fs, OP_CALL, base, nargs + 1, 2);
     ls->fs->freereg = base;
     init_exp(v, VCALL, ls->fs->pc - 1);
+  }
+
+  /* Array / table indexing: arr[index]
+   * E.g. arr[i], table[key]
+   * Arrays are stored Lua 1-based, so Java 0-based index needs +1.
+   *
+   * Uses VINDEXED to keep table register and index register cleanly
+   * separated.  For reads, luaK_dischargevars emits GETTABLE into
+   * a pending register.  For writes, luaK_storevar directly emits
+   * SETTABLE using the saved table/index.  No instruction patching. */
+  while (ls->t.token == '[') {
+    next(ls);  /* skip '[' */
+    expdesc idx;
+    expr(ls, &idx);
+    check(ls, ']'); next(ls);  /* skip ']' */
+
+    /* Resolve v (the table/array) to a register */
+    if (v->k == VRELOCABLE)
+      luaK_exp2nextreg(ls->fs, v);
+    int tbl_reg = v->u.info;
+
+    /* Put index into a register (after tbl_reg), then add 1 for Lua 1-based */
+    int idx_reg = ls->fs->freereg;
+    if (idx_reg <= tbl_reg) idx_reg = tbl_reg + 1;
+    exp2reg(ls->fs, &idx, idx_reg);
+    /* Convert Java 0-based → Lua 1-based: idx_reg += 1 */
+    int k1 = luaK_intK(ls->fs, 1);
+    luaK_codeABC(ls->fs, OP_ADD, idx_reg, idx_reg, k1 | BITRK);
+    ls->fs->freereg = idx_reg + 1;
+
+    /* Create VINDEXED: preserves table register and index register
+     * so that both reads (GETTABLE) and writes (SETTABLE) work
+     * correctly without instruction patching. */
+    v->u.ind.t = (lu_byte)tbl_reg;
+    v->u.ind.vt = VLOCAL;
+    v->u.ind.idx = (short)idx_reg;
+    v->k = VINDEXED;
+    v->t = v->f = NO_JUMP;
   }
 
   /* binary operators with string concat handling */
@@ -823,7 +884,7 @@ static void for_statement(JLexState *ls) {
     luaK_patchtohere(ls->fs, exit_jmp);
 
     leaveblock(ls->fs);
-    ls->fs->freereg = coll_reg;
+    /* freereg is now nactvar — all block-internal temp registers released */
     return;
   }
 
@@ -956,17 +1017,13 @@ static void switch_statement(JLexState *ls) {
 
       check(ls, ':'); next(ls);
 
-      /* emit: if (switch_val == case_val) goto body */
-      /* Use OPR_EQ comparison: emit OP_EQ(valreg, case_reg, 0) then test */
-      int eq_instr = luaK_codeABC(ls->fs, OP_EQ, 1, valreg, case_reg);
-      /* if false (not equal), jump past body */
-      int j_false = luaK_jump(ls->fs);
-      /* if true, fall through to body */
-      /* Patch OP_EQ result: jump if false */
-      {
-        Instruction *pc = &ls->fs->f->code[eq_instr];
-        SETARG_C(*pc, 1);  /* jump if false */
-      }
+      /* emit: if (switch_val != case_val) goto next_case;
+       * OP_EQ A=0 means: skip next instruction when values ARE equal.
+       * So: EQ 0,val,case  /  JMP next_case  /  ...body...
+       * If equal → skip JMP → execute body
+       * If not equal → don't skip → JMP jumps over body */
+      luaK_codeABC(ls->fs, OP_EQ, 0, valreg, case_reg);
+      int j_false = luaK_jump(ls->fs);  /* skip body when not equal */
 
       /* parse body */
       int j_break = NO_JUMP;
@@ -1108,7 +1165,7 @@ static void expr_statement(JLexState *ls) {
                    v.u.info, v.u.info, k1 | BITRK);
     }
     skip_semicolon(ls);
-    return 0;
+    return;
   }
 
   /* Check for assignment: x = expr */
@@ -1117,11 +1174,13 @@ static void expr_statement(JLexState *ls) {
     expdesc rhs;
     expr(ls, &rhs);
     if (v.k == VINDEXED)
-      luaK_storevar(ls->fs, &v, &rhs);  /* obj.field = value → SETTABLE */
-    else if (v.k == VNONRELOC)
-      exp2reg(ls->fs, &rhs, v.u.info); /* local = value */
+      luaK_storevar(ls->fs, &v, &rhs);  /* obj.field or arr[idx] = value → SETTABLE */
+    else if (v.k == VNONRELOC) {
+      /* Normal local = value */
+      exp2reg(ls->fs, &rhs, v.u.info);
+    }
     skip_semicolon(ls);
-    return 0;
+    return;
   }
 
   /* Check for compound assignment: +=, -=, *=, /=, %= */
@@ -1148,7 +1207,7 @@ static void expr_statement(JLexState *ls) {
       luaK_codeABC(ls->fs, lua_op, v.u.info, v.u.info, rreg);
     }
     skip_semicolon(ls);
-    return 0;
+    return;
   }
 
   skip_semicolon(ls);
@@ -1205,8 +1264,8 @@ static void statement(JLexState *ls) {
    */
   if (first == TK_JAVA_NAME) {
     int la = jlex_lookahead(ls);
-    if (la == '<' || la == '[') {
-      /* "Name<...>" or "Name[]" → definitely a type */
+    if (la == '<') {
+      /* "Name<...>" → generics type declaration */
       var_declaration(ls);
       return;
     }
@@ -1393,7 +1452,7 @@ static int method_definition(JLexState *ls, FuncState *fs, int class_reg,
       ls->fs->freereg = reg;
     }
     skip_semicolon(ls);
-    return 0;
+    return;
   }
 
   /* create nested FuncState */
