@@ -64,6 +64,8 @@ static int c_setmetatable(lua_State *L) {
     return 1;
 }
 
+static int g_dump = 0;  /* global: enable bytecode dump? */
+
 static int writer_cb(lua_State *L, const void *p, size_t sz, void *ud) {
     (void)L;
     FILE *f = (FILE *)ud;
@@ -72,66 +74,86 @@ static int writer_cb(lua_State *L, const void *p, size_t sz, void *ud) {
 
 static void dump_proto_debug(const Proto *f, int indent) {
     int i;
-    (void)indent;
-    printf("  dump_proto: f=%p\n", (void*)f); fflush(stdout);
-    printf("  dump_proto: numparams=%d\n", f->numparams); fflush(stdout);
-    printf("  dump_proto: maxstacksize=%d\n", f->maxstacksize); fflush(stdout);
-    printf("  dump_proto: sizecode=%d\n", f->sizecode); fflush(stdout);
-    printf("  dump_proto: sizek=%d\n", f->sizek); fflush(stdout);
-    printf("  dump_proto: sizep=%d\n", f->sizep); fflush(stdout);
-    printf("  Proto: params=%d stack=%d code=%d consts=%d protos=%d\n",
-           f->numparams, f->maxstacksize, f->sizecode, f->sizek, f->sizep);
+    const char *sp = "  ";
+    for (int j = 0; j < indent; j++) printf("  ");
+    printf("=== Proto %p: params=%d stack=%d code=%d consts=%d protos=%d ===\n",
+           (void*)f, f->numparams, f->maxstacksize, f->sizecode, f->sizek, f->sizep);
     fflush(stdout);
     /* print constants */
-    for (i = 0; i < f->sizek; i++) {
-        TValue *kv = &f->k[i];
-        printf("    const[%d] = ", i);
-        switch (ttype(kv)) {
-            case LUA_TNIL: printf("nil"); break;
-            case LUA_TBOOLEAN: printf(ivalue(kv) ? "true" : "false"); break;
-            case LUA_TNUMFLT: printf("%g", fltvalue(kv)); break;
-            case LUA_TNUMINT: printf("%lld", (long long)ivalue(kv)); break;
-            case LUA_TSHRSTR: case LUA_TLNGSTR: printf("\"%s\"", getstr(tsvalue(kv))); break;
-            default: printf("type=%d", ttype(kv)); break;
+    if (f->sizek > 0) {
+        for (int j = 0; j < indent; j++) printf("  ");
+        printf("-- Constants (%d):\n", f->sizek);
+        for (i = 0; i < f->sizek; i++) {
+            TValue *kv = &f->k[i];
+            for (int j = 0; j < indent; j++) printf("  ");
+            printf("  [%2d] ", i);
+            switch (ttype(kv)) {
+                case LUA_TNIL: printf("nil"); break;
+                case LUA_TBOOLEAN: printf(ivalue(kv) ? "true" : "false"); break;
+                case LUA_TNUMFLT: printf("%g", fltvalue(kv)); break;
+                case LUA_TNUMINT: printf("%lld", (long long)ivalue(kv)); break;
+                case LUA_TSHRSTR: case LUA_TLNGSTR: printf("\"%s\"", getstr(tsvalue(kv))); break;
+                default: printf("type=%d", ttype(kv)); break;
+            }
+            printf("\n");
         }
-        printf("\n");
+    }
+    /* print bytecode */
+    if (f->sizecode > 0) {
+        for (int j = 0; j < indent; j++) printf("  ");
+        printf("-- Code (%d):\n", f->sizecode);
+        for (i = 0; i < f->sizecode; i++) {
+            Instruction inst = f->code[i];
+            OpCode op = GET_OPCODE(inst);
+            for (int j = 0; j < indent; j++) printf("  ");
+            printf("  %4d %-9s A=%-2d", i, luaP_opnames[op], GETARG_A(inst));
+            switch (getOpMode(op)) {
+                case iABC:
+                    printf(" B=%-2d C=%-4d", GETARG_B(inst), GETARG_C(inst));
+                    if (GETARG_C(inst) & BITRK) {
+                        int k = GETARG_C(inst) & ~BITRK;
+                        if (k < f->sizek) {
+                            TValue *kv = &f->k[k];
+                            if (ttisstring(kv)) printf(" ; \"%s\"", getstr(tsvalue(kv)));
+                            else if (ttisinteger(kv)) printf(" ; %lld", (long long)ivalue(kv));
+                            else if (ttisfloat(kv)) printf(" ; %g", fltvalue(kv));
+                        }
+                    }
+                    if (op == OP_GETTABLE || op == OP_SETTABLE) {
+                        printf("  -- %s", op == OP_GETTABLE ? "get" : "set");
+                    }
+                    if (op == OP_GETTABUP) printf("  -- _ENV lookup");
+                    if (op == OP_SETTABUP) printf("  -- _ENV store");
+                    if (op == OP_CLOSURE) {
+                        int pi = GETARG_Bx(inst);
+                        printf("  -- closure proto[%d]", pi);
+                    }
+                    if (op == OP_CALL) {
+                        printf("  -- call(args=%d, rets=%d)",
+                               GETARG_B(inst), GETARG_C(inst));
+                    }
+                    break;
+                case iABx:
+                    printf(" Bx=%-4d", GETARG_Bx(inst));
+                    if (op == OP_CLOSURE) printf(" ; proto[%d]", GETARG_Bx(inst));
+                    break;
+                case iAsBx:
+                    printf(" sBx=%-4d", GETARG_sBx(inst));
+                    break;
+                case iAx:
+                    printf(" Ax=%-4d", GETARG_Ax(inst));
+                    break;
+            }
+            printf("\n");
+        }
     }
     fflush(stdout);
-    for (i = 0; i < f->sizecode; i++) {
-        Instruction inst = f->code[i];
-        OpCode op = GET_OPCODE(inst);
-        printf("  %4d %-9s A=%-2d", i, luaP_opnames[op], GETARG_A(inst));
-        switch (getOpMode(op)) {
-            case iABC:
-                printf(" B=%-2d C=%-4d", GETARG_B(inst), GETARG_C(inst));
-                if (GETARG_C(inst) & BITRK) {
-                    int k = GETARG_C(inst) & ~BITRK;
-                    if (k < f->sizek) {
-                        TValue *kv = &f->k[k];
-                        if (ttisstring(kv)) printf(" ; \"%s\"", getstr(tsvalue(kv)));
-                        else if (ttisinteger(kv)) printf(" ; %lld", (long long)ivalue(kv));
-                    }
-                }
-                break;
-            case iABx:
-                printf(" Bx=%-4d", GETARG_Bx(inst));
-                if (op == OP_CLOSURE) printf(" ; proto[%d]", GETARG_Bx(inst));
-                break;
-            case iAsBx:
-                printf(" sBx=%-4d", GETARG_sBx(inst));
-                break;
-            case iAx:
-                printf(" Ax=%-4d", GETARG_Ax(inst));
-                break;
-        }
-        printf("\n");
-    }
+    /* recurse into sub-protos (methods / nested functions) */
     for (i = 0; i < f->sizep; i++) {
-        printf("  Subproto[%d]: ", i);
         if (f->p[i] == NULL) {
-            printf("NULL\n");
+            for (int j = 0; j < indent; j++) printf("  ");
+            printf("  Subproto[%d]: NULL\n", i);
         } else {
-            printf("\n");
             dump_proto_debug(f->p[i], indent + 1);
         }
     }
@@ -170,6 +192,14 @@ static int run_java_file(lua_State *L, const char *filename) {
         return 0;
     }
     printf("  Compiled OK\n");
+    /* ---- Dump generated bytecode (when -d is active) ---- */
+    if (g_dump) {
+        printf("  --- Bytecode dump ---\n");
+        fflush(stdout);
+        dump_function_debug(L, -1);
+        printf("  --- End bytecode dump ---\n");
+        fflush(stdout);
+    }
     /* execute: runs the compiled closure, which returns the class table */
     if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
         fprintf(stderr, "Runtime error: %s\n", lua_tostring(L, -1));
@@ -241,10 +271,21 @@ static int run_lua_file(lua_State *L, const char *filename) {
 /* ============================================================
  * 4. main
  * ============================================================ */
-int main(int argc, char *argv[]) {
-    (void)argc;
-    (void)argv;
 
+static void print_usage(const char *prog) {
+    printf("Usage: %s [-d] [file...]\n", prog);
+    printf("  -d       dump generated Lua bytecode for .java files\n");
+    printf("  Each file is loaded and executed:\n");
+    printf("    .java  → compiled by Java→Lua compiler, then run\n");
+    printf("    .lua   → run as Lua script\n");
+    printf("  With no arguments, runs default test suite.\n");
+    printf("Examples:\n");
+    printf("  %s                                    (default suite)\n", prog);
+    printf("  %s -d scripts/tests/12_instance_method.java\n", prog);
+    printf("  %s scripts/tests/*.java\n", prog);
+}
+
+int main(int argc, char *argv[]) {
     lua_State *L = luaL_newstate();
     if (!L) { fprintf(stderr, "Failed to create Lua state\n"); return 1; }
 
@@ -262,30 +303,52 @@ int main(int argc, char *argv[]) {
     lua_register(L, "_new_instance", c_new_instance);
     lua_register(L, "_setmetatable", c_setmetatable);
 
-    /* ------ Load & run Java file ------ */
-    // run_java_file(L, "scripts/test.java");
+    /* ---- Parse -d flag ---- */
+    int argi = 1;
+    if (argc > 1 && strcmp(argv[1], "-d") == 0) {
+        g_dump = 1;
+        argi = 2;
+    }
 
-    /* ------ Test absolute minimal case ------ */
-    run_java_file(L, "scripts/test_min2.java");
+    if (argi >= argc) {
+        /* ---- Default: run smoke-test suite ---- */
+        printf("No arguments supplied – running default smoke tests.\n");
+        print_usage(argv[0]);
 
-    /* ------ Test minimal instance method ------ */
-    run_java_file(L, "scripts/test_min.java");
+        /* Inline Lua */
+        printf("\n--- Inline Lua ---\n");
+        luaL_dostring(L,
+            "print('Hello from inline Lua!')\n"
+            "print('3.14 + 2.86 = ' .. c_add(3.14, 2.86))\n"
+        );
 
-    /* ------ Test instance method ------ */
-    // run_java_file(L, "scripts/test_instance.java");
+        /* External Lua script */
+        run_lua_file(L, "scripts/test.lua");
 
-    /* ------ Load & run JavaFeaturesDemo ------ */
-    // run_java_file(L, "scripts/com/example/demo/JavaFeaturesDemo.java");
+        /* Minimal Java smoke tests */
+        run_java_file(L, "scripts/test_min2.java");
+        run_java_file(L, "scripts/test_min.java");
+    } else {
+        /* ---- Run user-supplied files ---- */
+        int passed = 0, failed = 0;
+        for (int i = argi; i < argc; i++) {
+            const char *fn = argv[i];
+            size_t len = strlen(fn);
+            int ok = 0;
 
-    /* ------ Inline Lua ------ */
-    printf("\n--- Inline Lua ---\n");
-    luaL_dostring(L,
-        "print('Hello from inline Lua!')\n"
-        "print('3.14 + 2.86 = ' .. c_add(3.14, 2.86))\n"
-    );
+            if (len > 5 && strcmp(fn + len - 5, ".java") == 0) {
+                ok = run_java_file(L, fn);
+            } else if (len > 4 && strcmp(fn + len - 4, ".lua") == 0) {
+                ok = run_lua_file(L, fn);
+            } else {
+                fprintf(stderr, "Unknown file type (skip): %s\n", fn);
+                continue;
+            }
 
-    /* ------ External Lua script ------ */
-    run_lua_file(L, "scripts/test.lua");
+            if (ok) passed++; else failed++;
+        }
+        printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);
+    }
 
     lua_close(L);
     printf("\n=== Done ===\n");

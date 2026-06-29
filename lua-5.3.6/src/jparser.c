@@ -244,80 +244,36 @@ static void simpleexpr(JLexState *ls, expdesc *v) {
       TString *name = ls->t.seminfo.ts;
       next(ls);
 
-      /* Check: is this Name.xxx ?  i.e. Day.MONDAY
-       * BUT only for non-local names.  Local variables (like 'obj.method()')
-       * must use the local/chain path below. */
-      if (ls->t.token == '.' && search_local(ls->fs, name) < 0) {
-        /* qualified name access: get global table (e.g. Day), then field */
-        int reg = ls->fs->freereg;
-        int k = luaK_stringK(ls->fs, name);
-        luaK_codeABC(ls->fs, OP_GETTABUP, reg, 0, (unsigned int)(k | BITRK));
-        ls->fs->freereg = reg + 1;
-        /* now chain .field accesses */
-        while (ls->t.token == '.') {
-          next(ls);
-          if (ls->t.token != TK_JAVA_NAME)
-            jlex_syntaxerror(ls, "expected identifier after '.'");
-          TString *field = ls->t.seminfo.ts;
-          next(ls);
-          int fk = luaK_stringK(ls->fs, field);
-          luaK_codeABC(ls->fs, OP_GETTABLE, reg, reg, fk | BITRK);
-        }
-        init_exp(v, VNONRELOC, reg);
-      } else {
-        /* simple name: local or global */
+      /* All .chain and () call handling is deferred to subexpr().
+       * Here we just classify the bare name. */
+      {
+        /* simple name: local, instance field, or global */
         int loc = search_local(ls->fs, name);
         if (loc >= 0) {
           init_exp(v, VNONRELOC, loc);
         } else {
-          /* Deferred global lookup: emit GETTABUP with A=0, mark as VRELOCABLE
-           * so exp2reg / luaK_exp2nextreg can patch A to the right register later. */
-          int k = luaK_stringK(ls->fs, name);
-          int instr = luaK_codeABC(ls->fs, OP_GETTABUP, 0, 0, (unsigned int)(k | BITRK));
-          init_exp(v, VRELOCABLE, instr);
-        }
-
-        /* chain .field accesses */
-        while (ls->t.token == '.') {
-          next(ls);
-          if (ls->t.token != TK_JAVA_NAME)
-            jlex_syntaxerror(ls, "expected identifier after '.'");
-          TString *field = ls->t.seminfo.ts;
-          next(ls);
-
-          /* Resolve current value to a register before chaining */
-          luaK_exp2nextreg(ls->fs, v);
-          int tabreg = v->u.info;
-          int fk = luaK_stringK(ls->fs, field);
-          luaK_codeABC(ls->fs, OP_GETTABLE, tabreg, tabreg, fk | BITRK);
-          init_exp(v, VNONRELOC, tabreg);
-        }
-      }
-
-      /* handle function call if followed by (args) */
-      if (ls->t.token == '(') {
-        next(ls);
-        /* Resolve VRELOCABLE (deferred global) to a register first */
-        if (v->k == VRELOCABLE)
-          luaK_exp2nextreg(ls->fs, v);
-        int base = v->u.info;
-        int nargs = 0;
-        if (ls->t.token != ')') {
-          expdesc arg;
-          expr(ls, &arg);
-          exp2reg(ls->fs, &arg, base + 1);
-          nargs = 1;
-          while (ls->t.token == ',') {
-            next(ls);
-            expr(ls, &arg);
-            exp2reg(ls->fs, &arg, base + nargs + 1);
-            nargs++;
+          /* Check if 'this' is a local (inside instance method or constructor).
+           * If so AND not followed by '(' or '.' (method call / qualified name),
+           * treat unknown bare names as 'this.field' — instance field access.
+           * Names followed by '(' or '.' resolve via _ENV (static methods/globals). */
+          int this_loc = search_local(ls->fs, luaS_newliteral(ls->L, "this"));
+          if (this_loc >= 0 && ls->t.token != '(' && ls->t.token != '.') {
+            int k = luaK_stringK(ls->fs, name);
+            int reg = ls->fs->freereg;
+            luaK_codeABC(ls->fs, OP_GETTABLE, reg, this_loc, (unsigned int)(k | BITRK));
+            ls->fs->freereg = reg + 1;
+            init_exp(v, VNONRELOC, reg);
+          } else {
+            /* Deferred global lookup: emit GETTABUP with A=0, mark as VRELOCABLE
+             * so exp2reg / luaK_exp2nextreg can patch A to the right register later. */
+            int k = luaK_stringK(ls->fs, name);
+            int instr = luaK_codeABC(ls->fs, OP_GETTABUP, 0, 0, (unsigned int)(k | BITRK));
+            init_exp(v, VRELOCABLE, instr);
           }
         }
-        check(ls, ')'); next(ls);
-        luaK_codeABC(ls->fs, OP_CALL, base, nargs + 1, 2);
-        ls->fs->freereg = base;
-        init_exp(v, VCALL, ls->fs->pc - 1);
+
+        /* NOTE: .chain and function call are handled by subexpr()
+         * after simpleexpr() returns. Do NOT consume them here. */
       }
       break;
     }
@@ -463,15 +419,21 @@ static void subexpr(JLexState *ls, expdesc *v, int limit) {
 
     luaK_exp2nextreg(ls->fs, v);
     int obj_reg = v->u.info;
-    /* Get method into a separate register so obj_reg still holds the object */
-    int method_reg = ls->fs->freereg;
-    ls->fs->freereg = method_reg + 1;
     int k = luaK_stringK(ls->fs, field);
-    luaK_codeABC(ls->fs, OP_GETTABLE, method_reg, obj_reg, k + (1 << 8));
+
     if (ls->t.token == '(') {
+      /* Method call: allocate method reg, GETTABLE, setup self, CALL */
+      int method_reg = ls->fs->freereg;
+      ls->fs->freereg = method_reg + 1;
+      luaK_codeABC(ls->fs, OP_GETTABLE, method_reg, obj_reg, k | BITRK);
       next(ls);
       /* self = object (method_reg + 1) */
       luaK_codeABC(ls->fs, OP_MOVE, method_reg + 1, obj_reg, 0);
+      /* Reserve space: method, self, arg1, arg2, ...
+       * Ensure argument expressions start at method_reg+2 so they
+       * don't overwrite method or self registers. */
+      if (ls->fs->freereg < method_reg + 2)
+        ls->fs->freereg = method_reg + 2;
       int nargs = 1;  /* self counts as arg 1 */
       if (ls->t.token != ')') {
         expdesc arg;
@@ -490,8 +452,44 @@ static void subexpr(JLexState *ls, expdesc *v, int limit) {
       ls->fs->freereg = method_reg;
       init_exp(v, VCALL, ls->fs->pc - 1);
     } else {
-      init_exp(v, VNONRELOC, method_reg);
+      /* Field access: use VINDEXED so expression reading emits GETTABLE
+       * and assignment (luaK_storevar) emits SETTABLE. */
+      v->k = VINDEXED;
+      v->u.ind.t = (lu_byte)obj_reg;
+      v->u.ind.vt = VLOCAL;
+      v->u.ind.idx = (short)(k | BITRK);
+      v->t = v->f = NO_JUMP;
     }
+  }
+
+  /* Bare function call: name(args) where name is not followed by '.'.
+   * E.g. add(5, 7), println("hello"), etc. */
+  if (ls->t.token == '(') {
+    /* Resolve VRELOCABLE (deferred global) to a register first */
+    if (v->k == VRELOCABLE)
+      luaK_exp2nextreg(ls->fs, v);
+    int base = v->u.info;
+    next(ls);  /* skip '(' */
+    /* Ensure argument expressions start after the function register */
+    if (ls->fs->freereg < base + 1)
+      ls->fs->freereg = base + 1;
+    int nargs = 0;
+    if (ls->t.token != ')') {
+      expdesc arg;
+      expr(ls, &arg);
+      exp2reg(ls->fs, &arg, base + 1);
+      nargs = 1;
+      while (ls->t.token == ',') {
+        next(ls);
+        expr(ls, &arg);
+        exp2reg(ls->fs, &arg, base + nargs + 1);
+        nargs++;
+      }
+    }
+    check(ls, ')'); next(ls);
+    luaK_codeABC(ls->fs, OP_CALL, base, nargs + 1, 2);
+    ls->fs->freereg = base;
+    init_exp(v, VCALL, ls->fs->pc - 1);
   }
 
   /* binary operators with string concat handling */
@@ -506,6 +504,12 @@ static void subexpr(JLexState *ls, expdesc *v, int limit) {
      * after parsing the right operand below. */
     if (tok == '+' && v->k == VK)
       op = OPR_CONCAT;
+    /* Also: if left is the result of a previous CONCAT, keep as CONCAT */
+    if (tok == '+' && op != OPR_CONCAT && v->k == VRELOCABLE) {
+      Instruction prev = getinstruction(ls->fs, v);
+      if (GET_OPCODE(prev) == OP_CONCAT)
+        op = OPR_CONCAT;
+    }
 
     if (op == OPR_NOBINOPR || binop_level(tok) <= limit) break;
 
@@ -1092,8 +1096,10 @@ static void expr_statement(JLexState *ls) {
     next(ls);
     expdesc rhs;
     expr(ls, &rhs);
-    if (v.k == VNONRELOC)
-      exp2reg(ls->fs, &rhs, v.u.info);
+    if (v.k == VINDEXED)
+      luaK_storevar(ls->fs, &v, &rhs);  /* obj.field = value → SETTABLE */
+    else if (v.k == VNONRELOC)
+      exp2reg(ls->fs, &rhs, v.u.info); /* local = value */
     skip_semicolon(ls);
     return 0;
   }
@@ -1444,6 +1450,33 @@ static int method_definition(JLexState *ls, FuncState *fs, int class_reg,
 
   /* parse body or skip abstract/native */
   if (ls->t.token == '{') {
+    /* For custom constructors: inject metatable setup code
+     * before the user's constructor body, so the resulting
+     * object has __index → class_table for method dispatch. */
+    if (is_ctor) {
+      int base = ls->fs->freereg;  /* start of temp registers */
+      /* R(base) = _ENV[ClassName] — get the class table */
+      int kc = luaK_stringK(ls->fs, class_name);
+      luaK_codeABC(ls->fs, OP_GETTABUP, base, 0, (unsigned int)(kc | BITRK));
+      /* R(base+1) = {} — create metatable */
+      luaK_codeABC(ls->fs, OP_NEWTABLE, base + 1, 0, 0);
+      /* mt.__index = class_table */
+      int ki = luaK_stringK(ls->fs, luaS_newliteral(ls->L, "__index"));
+      luaK_codeABC(ls->fs, OP_SETTABLE, base + 1, (unsigned int)(ki | BITRK), base);
+      /* R(base+2) = _ENV["_setmetatable"] */
+      int ks = luaK_stringK(ls->fs, luaS_newliteral(ls->L, "_setmetatable"));
+      luaK_codeABC(ls->fs, OP_GETTABUP, base + 2, 0, (unsigned int)(ks | BITRK));
+      /* R(base+3) = self (R0) */
+      luaK_codeABC(ls->fs, OP_MOVE, base + 3, 0, 0);
+      /* R(base+4) = mt (R(base+1)) */
+      luaK_codeABC(ls->fs, OP_MOVE, base + 4, base + 1, 0);
+      /* Call _setmetatable(R(base+3), R(base+4)) */
+      luaK_codeABC(ls->fs, OP_CALL, base + 2, 3, 1);
+      /* After call only self (R0) + explicit params survive.
+       * Reset freereg to just after params. The constructor body
+       * will re-allocate from there. */
+      ls->fs->freereg = nparams;
+    }
     block(ls);
   } else if (ls->t.token == ';') {
     next(ls); /* abstract or interface method */
