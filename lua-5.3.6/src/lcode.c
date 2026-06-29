@@ -478,7 +478,7 @@ int luaK_intK (FuncState *fs, lua_Integer n) {
 /*
 ** Add a float to list of constants and return its index.
 */
-static int luaK_numberK (FuncState *fs, lua_Number r) {
+int luaK_numberK (FuncState *fs, lua_Number r) {
   TValue o;
   setfltvalue(&o, r);
   return addk(fs, &o, &o);  /* use number itself as key */

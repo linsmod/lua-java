@@ -28,12 +28,18 @@ static const char *const jlex_tokens[] = {
     "for", "while", "true", "false",
     "null", "this",
     "boolean", "final",
+    /* new keywords */
+    "package", "import", "char", "double",
+    "enum", "switch", "case", "default",
+    "break", "do", "try", "catch",
+    "finally", "throw", "throws",
+    "implements", "extends", "interface",
     "<integer>", "<float>", "<string>", "<name>",
     "<eof>"
 };
 
 /* Number of actual keyword entries (excludes the 5 pseudo-tokens at end) */
-#define NJAVA_KW  (TK_JAVA_EOS - TK_JAVA_CLASS - 5)
+#define NJAVA_KW  (TK_JAVA_INTLIT - TK_JAVA_CLASS)
 
 /* Keyword lookup table — independent of ts->extra to avoid
  * conflicts with Lua reserved words */
@@ -99,8 +105,8 @@ TString *jlex_newstring(JLexState *ls, const char *str, size_t l) {
 }
 
 /* ---- error ---- */
-static const char *token_name(int token) {
-    if (token < 256) return luaO_pushfstring(NULL, "'%c'", token);
+static const char *token_name(lua_State *L, int token) {
+    if (token < 256) return luaO_pushfstring(L, "'%c'", token);
     if (token == TK_JAVA_EQ)  return "'=='";
     if (token == TK_JAVA_NE)  return "'!='";
     if (token == TK_JAVA_LE)  return "'<='";
@@ -110,13 +116,13 @@ static const char *token_name(int token) {
     if (token == TK_JAVA_INC) return "'++'";
     if (token == TK_JAVA_DEC) return "'--'";
     if (token >= TK_JAVA_CLASS && token < TK_JAVA_INTLIT)
-        return luaO_pushfstring(NULL, "'%s'", jlex_tokens[token - TK_JAVA_CLASS]);
+        return luaO_pushfstring(L, "'%s'", jlex_tokens[token - TK_JAVA_CLASS]);
     if (token == TK_JAVA_EOS) return "'<eof>'";
-    return luaO_pushfstring(NULL, "'%s'", jlex_tokens[token - TK_JAVA_CLASS]);
+    return luaO_pushfstring(L, "'%s'", jlex_tokens[token - TK_JAVA_CLASS]);
 }
 
 l_noret jlex_syntaxerror(JLexState *ls, const char *msg) {
-    const char *tn = token_name(ls->t.token);
+    const char *tn = token_name(ls->L, ls->t.token);
     const char *full = luaO_pushfstring(ls->L, "%s near %s", msg, tn);
     full = luaG_addinfo(ls->L, full, ls->source, ls->linenumber);
     luaD_throw(ls->L, LUA_ERRSYNTAX);
@@ -229,6 +235,7 @@ static int jlex(JLexState *ls, JavaSemInfo *seminfo) {
         case '/': next(ls);
             if (ls->current == '/') { next(ls); while(!currIsNewline(ls)&&ls->current!=EOZ)next(ls); break; }
             if (ls->current == '*') { next(ls); for(;;){if(ls->current==EOZ)jlex_syntaxerror(ls,"unfinished comment");if(ls->current=='*'){next(ls);if(ls->current=='/'){next(ls);break;}}else if(currIsNewline(ls))inclinenumber(ls);else next(ls);} break; }
+            if (ls->current == '=') { next(ls); return TK_JAVA_DIVEQ; }
             return '/';
         case '=': next(ls); if(check_next1(ls,'='))return TK_JAVA_EQ; return '=';
         case '!': next(ls); if(check_next1(ls,'='))return TK_JAVA_NE; return '!';
@@ -236,10 +243,10 @@ static int jlex(JLexState *ls, JavaSemInfo *seminfo) {
         case '>': next(ls); if(check_next1(ls,'='))return TK_JAVA_GE; return '>';
         case '&': next(ls); if(check_next1(ls,'&'))return TK_JAVA_AND; return '&';
         case '|': next(ls); if(check_next1(ls,'|'))return TK_JAVA_OR; return '|';
-        case '+': next(ls); if(check_next1(ls,'+'))return TK_JAVA_INC; return '+';
-        case '-': next(ls); if(check_next1(ls,'-'))return TK_JAVA_DEC; return '-';
-        case '*': next(ls); return '*';
-        case '%': next(ls); return '%';
+        case '+': next(ls); if(check_next1(ls,'+'))return TK_JAVA_INC; if(check_next1(ls,'='))return TK_JAVA_PLUSEQ; return '+';
+        case '-': next(ls); if(check_next1(ls,'-'))return TK_JAVA_DEC; if(check_next1(ls,'='))return TK_JAVA_MINEQ; return '-';
+        case '*': next(ls); if(check_next1(ls,'='))return TK_JAVA_MULEQ; return '*';
+        case '%': next(ls); if(check_next1(ls,'='))return TK_JAVA_MODEQ; return '%';
         case '"': read_string(ls, seminfo); return TK_JAVA_STRLIT;
         case '\'': {
             int c;

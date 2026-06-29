@@ -55,6 +55,9 @@ static void enterblock(FuncState *fs, JBlockCnt *bl, lu_byte isloop) {
 static void leaveblock(FuncState *fs) {
   JBlockCnt *bl = (JBlockCnt*)fs->bl;
   fs->bl = (struct BlockCnt*)bl->previous;
+  /* Deactivate locals created in this block but keep freereg
+   * so maxstacksize accounts for all temporaries used. */
+  fs->nactvar = bl->nactvar;
 }
 
 /* ---- advance to next token ---- */
@@ -78,13 +81,19 @@ static void skip_semicolon(JLexState *ls) {
 static int new_localvar(FuncState *fs, TString *name) {
   Proto *f = fs->f;
   int reg = fs->nactvar;
-  /* store name in proto's locvars for later lookup */
-  luaM_growvector(fs->ls->L, f->locvars, fs->nlocvars, f->sizelocvars,
-                  LocVar, SHRT_MAX, "local variables");
-  f->locvars[fs->nlocvars].varname = name;
-  f->locvars[fs->nlocvars].startpc = fs->pc;
-  fs->nlocvars++;
+  /* Ensure locvars array has room at index 'reg'.
+   * Use 'reg' as the index so that search_local's assumption
+   * (active locals: locvars[i] <=> register i) holds even after
+   * leaveblock creates gaps in the array. */
+  if (reg >= f->sizelocvars)
+    luaM_growvector(fs->ls->L, f->locvars, fs->nlocvars, f->sizelocvars,
+                    LocVar, SHRT_MAX, "local variables");
+  f->locvars[reg].varname = name;
+  f->locvars[reg].startpc = fs->pc;
   fs->nactvar++;
+  /* Only grow nlocvars if this register was previously unused */
+  if (reg >= fs->nlocvars)
+    fs->nlocvars = reg + 1;
   if (fs->nactvar > fs->freereg)
     fs->freereg = fs->nactvar;
   return reg;
@@ -93,20 +102,18 @@ static int new_localvar(FuncState *fs, TString *name) {
 /* search active local variables by name; returns register index or -1 */
 static int search_local(FuncState *fs, TString *name) {
   int i;
-  for (i = cast_int(fs->nlocvars) - 1; i >= 0; i--) {
+  for (i = cast_int(fs->nactvar) - 1; i >= 0; i--) {
     if (fs->f->locvars[i].varname == name)
-      return i;  /* register = position in locvars */
+      return i;  /* for active locals, locvars index == register number */
   }
   return -1;
 }
 
 /* ---------- EXPRESSION PARSER ---------- */
 
-/* forward */
 static void simpleexpr(JLexState *ls, expdesc *v);
 static void subexpr(JLexState *ls, expdesc *v, int limit);
 
-/* binary operator -> lcode.c BinOpr mapping */
 static BinOpr getbinopr(int token) {
   switch (token) {
     case '+':  return OPR_ADD;
@@ -126,7 +133,6 @@ static BinOpr getbinopr(int token) {
   }
 }
 
-/* precedence level for binary operators */
 static int binop_level(int token) {
   switch (token) {
     case TK_JAVA_OR:  return 1;
@@ -144,6 +150,15 @@ static int binop_level(int token) {
 /* dispatch expression result to a register */
 static void exp2reg(FuncState *fs, expdesc *e, int reg) {
   luaK_dischargevars(fs, e);
+  if (e->k == VJMP || e->t != e->f) {
+    int src = luaK_exp2anyreg(fs, e);
+    if (src != reg)
+      luaK_codeABC(fs, OP_MOVE, reg, src, 0);
+    e->u.info = reg;
+    e->k = VNONRELOC;
+    e->t = e->f = NO_JUMP;
+    return;
+  }
   switch (e->k) {
     case VNIL: case VFALSE: case VTRUE: {
       luaK_codeABC(fs, OP_LOADBOOL, reg, e->k == VTRUE, 0);
@@ -154,8 +169,8 @@ static void exp2reg(FuncState *fs, expdesc *e, int reg) {
       break;
     }
     case VKFLT: {
-      int k = luaK_intK(fs, (lua_Integer)e->u.nval); /* simplified */
-      luaK_codeABx(fs, OP_LOADK, reg, k);
+      int k = luaK_numberK(fs, e->u.nval);
+      luaK_codek(fs, reg, k);
       break;
     }
     case VKINT: {
@@ -178,6 +193,15 @@ static void exp2reg(FuncState *fs, expdesc *e, int reg) {
   e->u.info = reg;
   e->k = VNONRELOC;
   e->t = e->f = NO_JUMP;
+}
+
+/*
+** Helper: push a string constant to register reg
+*/
+static void emit_string_const(FuncState *fs, const char *s, int reg) {
+  TString *ts = luaS_new(fs->ls->L, s);
+  int k = luaK_stringK(fs, ts);
+  luaK_codek(fs, reg, k);
 }
 
 /* simple expressions */
@@ -217,51 +241,71 @@ static void simpleexpr(JLexState *ls, expdesc *v) {
       break;
     }
     case TK_JAVA_NAME: {
-      /* Variable / field-chain / method-call.
-       * First check if it's a local variable, otherwise lookup
-       * from _ENV (OP_GETTABUP). Then chain .field accesses
-       * with OP_GETTABLE, and handle (args) calls. */
       TString *name = ls->t.seminfo.ts;
       next(ls);
 
-      /* Step 1: local or global? */
-      int loc = search_local(ls->fs, name);
-      if (loc >= 0) {
-        /* local variable — already in register */
-        init_exp(v, VNONRELOC, loc);
-      } else {
-        /* global — lookup from _ENV into a register */
+      /* Check: is this Name.xxx ?  i.e. Day.MONDAY
+       * BUT only for non-local names.  Local variables (like 'obj.method()')
+       * must use the local/chain path below. */
+      if (ls->t.token == '.' && search_local(ls->fs, name) < 0) {
+        /* qualified name access: get global table (e.g. Day), then field */
         int reg = ls->fs->freereg;
         int k = luaK_stringK(ls->fs, name);
         luaK_codeABC(ls->fs, OP_GETTABUP, reg, 0, (unsigned int)(k | BITRK));
         ls->fs->freereg = reg + 1;
+        /* now chain .field accesses */
+        while (ls->t.token == '.') {
+          next(ls);
+          if (ls->t.token != TK_JAVA_NAME)
+            jlex_syntaxerror(ls, "expected identifier after '.'");
+          TString *field = ls->t.seminfo.ts;
+          next(ls);
+          int fk = luaK_stringK(ls->fs, field);
+          luaK_codeABC(ls->fs, OP_GETTABLE, reg, reg, fk | BITRK);
+        }
         init_exp(v, VNONRELOC, reg);
+      } else {
+        /* simple name: local or global */
+        int loc = search_local(ls->fs, name);
+        if (loc >= 0) {
+          init_exp(v, VNONRELOC, loc);
+        } else {
+          /* Deferred global lookup: emit GETTABUP with A=0, mark as VRELOCABLE
+           * so exp2reg / luaK_exp2nextreg can patch A to the right register later. */
+          int k = luaK_stringK(ls->fs, name);
+          int instr = luaK_codeABC(ls->fs, OP_GETTABUP, 0, 0, (unsigned int)(k | BITRK));
+          init_exp(v, VRELOCABLE, instr);
+        }
+
+        /* chain .field accesses */
+        while (ls->t.token == '.') {
+          next(ls);
+          if (ls->t.token != TK_JAVA_NAME)
+            jlex_syntaxerror(ls, "expected identifier after '.'");
+          TString *field = ls->t.seminfo.ts;
+          next(ls);
+
+          /* Resolve current value to a register before chaining */
+          luaK_exp2nextreg(ls->fs, v);
+          int tabreg = v->u.info;
+          int fk = luaK_stringK(ls->fs, field);
+          luaK_codeABC(ls->fs, OP_GETTABLE, tabreg, tabreg, fk | BITRK);
+          init_exp(v, VNONRELOC, tabreg);
+        }
       }
 
-      /* Step 2: chain .field accesses using GETTABLE on the object */
-      while (ls->t.token == '.') {
-        next(ls);
-        if (ls->t.token != TK_JAVA_NAME)
-          jlex_syntaxerror(ls, "expected identifier after '.'");
-        TString *field = ls->t.seminfo.ts;
-        next(ls);
-
-        luaK_exp2nextreg(ls->fs, v);
-        int tabreg = v->u.info;
-        int fk = luaK_stringK(ls->fs, field);
-        luaK_codeABC(ls->fs, OP_GETTABLE, tabreg, tabreg, fk | BITRK);
-        init_exp(v, VNONRELOC, tabreg);
-      }
-
-      /* Step 3: handle function call if followed by (args) */
+      /* handle function call if followed by (args) */
       if (ls->t.token == '(') {
         next(ls);
+        /* Resolve VRELOCABLE (deferred global) to a register first */
+        if (v->k == VRELOCABLE)
+          luaK_exp2nextreg(ls->fs, v);
         int base = v->u.info;
         int nargs = 0;
         if (ls->t.token != ')') {
           expdesc arg;
           expr(ls, &arg);
-          exp2reg(ls->fs, &arg, base + 1);  /* 1st arg at base+1 */
+          exp2reg(ls->fs, &arg, base + 1);
           nargs = 1;
           while (ls->t.token == ',') {
             next(ls);
@@ -272,8 +316,8 @@ static void simpleexpr(JLexState *ls, expdesc *v) {
         }
         check(ls, ')'); next(ls);
         luaK_codeABC(ls->fs, OP_CALL, base, nargs + 1, 2);
-        ls->fs->freereg = base;  /* result in base */
-        init_exp(v, VRELOCABLE, ls->fs->pc - 1);
+        ls->fs->freereg = base;
+        init_exp(v, VCALL, ls->fs->pc - 1);
       }
       break;
     }
@@ -297,28 +341,105 @@ static void simpleexpr(JLexState *ls, expdesc *v) {
     }
     case TK_JAVA_NEW: {
       next(ls);
-      /* new ClassName() → empty table */
+      /* new ClassName(args...) */
       if (ls->t.token != TK_JAVA_NAME)
         jlex_syntaxerror(ls, "expected class name after 'new'");
-      next(ls); /* skip class name */
-      if (ls->t.token == '(') {
-        next(ls);
-        if (ls->t.token != ')')
-          jlex_syntaxerror(ls, "constructor args not supported yet");
+      TString *cname = ls->t.seminfo.ts;
+      next(ls);
+
+      /* skip generics: new ArrayList<>() */
+      if (ls->t.token == '<') {
+        int depth = 1;
+        while (depth > 0 && ls->t.token != TK_JAVA_EOS) {
+          next(ls);
+          if (ls->t.token == '<') depth++;
+          else if (ls->t.token == '>') depth--;
+        }
+        if (ls->t.token == '>') next(ls);
       }
-      check(ls, ')'); next(ls);
+
+      /* create empty table for the object */
       int reg = ls->fs->freereg;
       luaK_codeABC(ls->fs, OP_NEWTABLE, reg, 0, 0);
       ls->fs->freereg = reg + 1;
+
+      /* parse constructor args */
+      check(ls, '('); next(ls);
+      int nargs = 0;
+      if (ls->t.token != ')') {
+        expdesc arg;
+        expr(ls, &arg);
+        exp2reg(ls->fs, &arg, reg + 1);
+        nargs = 1;
+        while (ls->t.token == ',') {
+          next(ls);
+          expr(ls, &arg);
+          exp2reg(ls->fs, &arg, reg + nargs + 1);
+          nargs++;
+        }
+      }
+      check(ls, ')'); next(ls);
+
+      /* Compute ctor register.  Args are currently at reg+1..reg+nargs
+       * but CALL expects them contiguously after ctor_reg.  Relocate. */
+      {
+        int ctor_reg = reg + nargs + 1;
+        /* Need room: ctor_reg (1) + self (1) + nargs args */
+        ls->fs->freereg = ctor_reg + nargs + 2;
+
+        /* Look up class table and constructor */
+        int k = luaK_stringK(ls->fs, cname);
+        luaK_codeABC(ls->fs, OP_GETTABUP, ctor_reg, 0, (unsigned int)(k | BITRK));
+        luaK_codeABC(ls->fs, OP_GETTABLE, ctor_reg, ctor_reg, k | BITRK);
+
+        /* Relocate object (self) and args to be adjacent to ctor_reg */
+        luaK_codeABC(ls->fs, OP_MOVE, ctor_reg + 1, reg, 0);  /* self */
+        { int i;
+          for (i = 0; i < nargs; i++) {
+            luaK_codeABC(ls->fs, OP_MOVE, ctor_reg + 2 + i, reg + 1 + i, 0);
+          }
+        }
+
+        /* call constructor: R(ctor_reg)(self, arg1, ...).
+         * Constructor sets metatable on self. Object already at 'reg'. */
+        luaK_codeABC(ls->fs, OP_CALL, ctor_reg, nargs + 2, 1);
+        ls->fs->freereg = reg + 1;
+      }
+
       init_exp(v, VNONRELOC, reg);
       break;
     }
     case TK_JAVA_THIS: {
-      /* "this" → reference to first upvalue (the class table) */
       next(ls);
+      /* 'this' is the first parameter (self) in constructors and instance methods.
+       * It's always at register 0 (the first local). */
+      init_exp(v, VNONRELOC, 0);
+      break;
+    }
+    case '{': {
+      /* Array initializer: {expr, expr, ...}
+       * Create a table and populate it with indexed values. */
+      next(ls); /* skip '{' */
       int reg = ls->fs->freereg;
-      luaK_codeABC(ls->fs, OP_GETUPVAL, reg, 0, 0);
+      luaK_codeABC(ls->fs, OP_NEWTABLE, reg, 0, 0);
       ls->fs->freereg = reg + 1;
+      int idx = 0;
+      if (ls->t.token != '}') {
+        for (;;) {
+          expdesc elem;
+          expr(ls, &elem);
+          /* store elem in table at index idx+1 (Lua 1-based) */
+          int elem_reg = reg + 1;
+          exp2reg(ls->fs, &elem, elem_reg);
+          int ik = luaK_intK(ls->fs, idx + 1);
+          luaK_codeABC(ls->fs, OP_SETTABLE, reg, (unsigned int)(ik | BITRK), elem_reg);
+          ls->fs->freereg = reg + 1;
+          idx++;
+          if (ls->t.token == ',') { next(ls); }
+          else break;
+        }
+      }
+      check(ls, '}'); next(ls);
       init_exp(v, VNONRELOC, reg);
       break;
     }
@@ -327,7 +448,7 @@ static void simpleexpr(JLexState *ls, expdesc *v) {
   }
 }
 
-/* subexpr: precedence climbing */
+/* subexpr: precedence climbing with string concat support */
 static void subexpr(JLexState *ls, expdesc *v, int limit) {
   BinOpr op;
   simpleexpr(ls, v);
@@ -340,45 +461,66 @@ static void subexpr(JLexState *ls, expdesc *v, int limit) {
     TString *field = ls->t.seminfo.ts;
     next(ls);
 
-    /* get field */
     luaK_exp2nextreg(ls->fs, v);
-    int reg = v->u.info;
+    int obj_reg = v->u.info;
+    /* Get method into a separate register so obj_reg still holds the object */
+    int method_reg = ls->fs->freereg;
+    ls->fs->freereg = method_reg + 1;
     int k = luaK_stringK(ls->fs, field);
-    luaK_codeABC(ls->fs, OP_GETTABLE, reg, reg, k + (1 << 8)); /* RK */
-    /* method call? (self-call: R(reg) = method, R(reg+1) = self) */
+    luaK_codeABC(ls->fs, OP_GETTABLE, method_reg, obj_reg, k + (1 << 8));
     if (ls->t.token == '(') {
       next(ls);
-      luaK_codeABC(ls->fs, OP_MOVE, reg + 1, reg, 0);
-      int nargs = 1;  /* self */
+      /* self = object (method_reg + 1) */
+      luaK_codeABC(ls->fs, OP_MOVE, method_reg + 1, obj_reg, 0);
+      int nargs = 1;  /* self counts as arg 1 */
       if (ls->t.token != ')') {
         expdesc arg;
         expr(ls, &arg);
-        exp2reg(ls->fs, &arg, reg + 2);  /* 1st user arg at reg+2 */
+        exp2reg(ls->fs, &arg, method_reg + 2);
         nargs++;
         while (ls->t.token == ',') {
           next(ls);
           expr(ls, &arg);
-          exp2reg(ls->fs, &arg, reg + nargs + 1);
+          exp2reg(ls->fs, &arg, method_reg + nargs + 1);
           nargs++;
         }
       }
       check(ls, ')'); next(ls);
-      luaK_codeABC(ls->fs, OP_CALL, reg, nargs + 1, 2);
-      ls->fs->freereg = reg;
-      init_exp(v, VRELOCABLE, ls->fs->pc - 1);
+      luaK_codeABC(ls->fs, OP_CALL, method_reg, nargs + 1, 2);
+      ls->fs->freereg = method_reg;
+      init_exp(v, VCALL, ls->fs->pc - 1);
     } else {
-      init_exp(v, VNONRELOC, reg);
+      init_exp(v, VNONRELOC, method_reg);
     }
   }
 
-  /* binary operators */
-  while ((op = getbinopr(ls->t.token)) != OPR_NOBINOPR &&
-         binop_level(ls->t.token) > limit) {
-    int thislevel = binop_level(ls->t.token);
+  /* binary operators with string concat handling */
+  while (1) {
+    int tok = ls->t.token;
+    op = getbinopr(tok);
+
+    /* Java '+' semantics: if either operand is a string, it's concatenation.
+     * Detect left-side string literals at compile time: override OPR_ADD
+     * (from getbinopr) with OPR_CONCAT when left is a string literal.
+     * For right-side strings or variables holding strings, we detect
+     * after parsing the right operand below. */
+    if (tok == '+' && v->k == VK)
+      op = OPR_CONCAT;
+
+    if (op == OPR_NOBINOPR || binop_level(tok) <= limit) break;
+
+    int thislevel = binop_level(tok);
     next(ls);
-    luaK_infix(ls->fs, op, v);          /* left operand in v */
+    luaK_infix(ls->fs, op, v);
     { expdesc v2;
-      subexpr(ls, &v2, thislevel);       /* right operand in v2 */
+      subexpr(ls, &v2, thislevel);
+      /* Right-side string literal: switch from OPR_ADD to OPR_CONCAT.
+       * Must put left operand into a register (OPR_CONCAT needs
+       * consecutive registers; OPR_ADD may have kept left as numeral). */
+      if (tok == '+' && op != OPR_CONCAT && v2.k == VK) {
+        luaK_exp2nextreg(ls->fs, v);  /* put left into a register */
+        op = OPR_CONCAT;
+      }
       luaK_posfix(ls->fs, op, v, &v2, ls->linenumber); }
   }
 }
@@ -389,10 +531,8 @@ static void expr(JLexState *ls, expdesc *v) {
 
 /* ---------- STATEMENT PARSER ---------- */
 
-/* forward */
 static void statement(JLexState *ls);
 
-/* block: { statement* } */
 static void block(JLexState *ls) {
   check(ls, '{'); next(ls);
   while (ls->t.token != '}' && ls->t.token != TK_JAVA_EOS)
@@ -400,22 +540,61 @@ static void block(JLexState *ls) {
   check(ls, '}'); next(ls);
 }
 
+/* check if a token is a Java type keyword */
+static int is_type_token(int token) {
+  return token == TK_JAVA_INT || token == TK_JAVA_STRING ||
+         token == TK_JAVA_VOID || token == TK_JAVA_BOOLEAN ||
+         token == TK_JAVA_CHAR || token == TK_JAVA_DOUBLE;
+}
+
+/* skip modifiers and type, return type token */
+static void skip_type(JLexState *ls) {
+  if (is_type_token(ls->t.token)) {
+    next(ls);
+    /* skip array brackets on type: int[], String[], etc. */
+    while (ls->t.token == '[') {
+      next(ls);
+      if (ls->t.token == ']') next(ls);
+    }
+    return;
+  }
+  /* qualified type name like java.util.List<String> */
+  if (ls->t.token == TK_JAVA_NAME) {
+    next(ls);
+    while (ls->t.token == '.') {
+      next(ls);
+      if (ls->t.token == TK_JAVA_NAME) next(ls);
+    }
+    /* skip generics <...> */
+    if (ls->t.token == '<') {
+      int depth = 1;
+      while (depth > 0 && ls->t.token != TK_JAVA_EOS) {
+        next(ls);
+        if (ls->t.token == '<') depth++;
+        else if (ls->t.token == '>') depth--;
+        else if (ls->t.token == '?') { /* wildcard */ }
+      }
+      if (ls->t.token == '>') next(ls);
+    }
+    /* skip array brackets */
+    while (ls->t.token == '[') {
+      next(ls);
+      if (ls->t.token == ']') next(ls);
+    }
+    return;
+  }
+}
+
 /* variable declaration */
 static void var_declaration(JLexState *ls) {
   /* skip type */
-  if (ls->t.token == TK_JAVA_INT || ls->t.token == TK_JAVA_STRING ||
-      ls->t.token == TK_JAVA_VOID || ls->t.token == TK_JAVA_BOOLEAN) {
-    next(ls);
-  }
+  skip_type(ls);
+
   /* skip modifiers like static, public, private */
   while (ls->t.token == TK_JAVA_STATIC || ls->t.token == TK_JAVA_PUBLIC ||
          ls->t.token == TK_JAVA_PRIVATE || ls->t.token == TK_JAVA_FINAL) {
     next(ls);
-    /* re-check type after modifiers */
-    if (ls->t.token == TK_JAVA_INT || ls->t.token == TK_JAVA_STRING ||
-        ls->t.token == TK_JAVA_VOID || ls->t.token == TK_JAVA_BOOLEAN) {
-      next(ls);
-    }
+    if (is_type_token(ls->t.token)) skip_type(ls);
   }
 
   if (ls->t.token == TK_JAVA_NAME) {
@@ -428,15 +607,14 @@ static void var_declaration(JLexState *ls) {
     int reg;
     if (ls->t.token == '=') {
       next(ls);
+      reg = new_localvar(ls->fs, name);
       expdesc v;
       expr(ls, &v);
-      reg = new_localvar(ls->fs, name);
       exp2reg(ls->fs, &v, reg);
     } else {
       reg = new_localvar(ls->fs, name);
       luaK_nil(ls->fs, reg, 1);
     }
-    /* allow multiple vars: int a, b; but simplify */
     while (ls->t.token == ',') {
       next(ls);
       if (ls->t.token != TK_JAVA_NAME) break;
@@ -451,7 +629,7 @@ static void var_declaration(JLexState *ls) {
 
 /* if statement */
 static void if_statement(JLexState *ls) {
-  next(ls); /* skip 'if' */
+  next(ls);
   check(ls, '('); next(ls);
 
   expdesc cond;
@@ -467,7 +645,6 @@ static void if_statement(JLexState *ls) {
     next(ls);
     int j_end = luaK_jump(ls->fs);
     luaK_patchtohere(ls->fs, j_false);
-    /* else if? */
     if (ls->t.token == TK_JAVA_IF) {
       if_statement(ls);
     } else {
@@ -481,7 +658,7 @@ static void if_statement(JLexState *ls) {
 
 /* while statement */
 static void while_statement(JLexState *ls) {
-  next(ls); /* skip 'while' */
+  next(ls);
   check(ls, '('); next(ls);
 
   int loop_pc = ls->fs->pc;
@@ -498,20 +675,136 @@ static void while_statement(JLexState *ls) {
 
   block(ls);
 
-  /* jump back to condition */
   luaK_codeAsBx(ls->fs, OP_JMP, 0, loop_pc - ls->fs->pc - 1);
   luaK_patchtohere(ls->fs, j_false);
 
   leaveblock(ls->fs);
 }
 
-/* for statement (numeric only) */
-static void for_statement(JLexState *ls) {
-  next(ls); /* skip 'for' */
+/* do-while statement */
+static void do_while_statement(JLexState *ls) {
+  next(ls); /* skip 'do' */
+
+  int body_pc = ls->fs->pc;
+
+  JBlockCnt bl;
+  enterblock(ls->fs, &bl, 1);
+
+  block(ls);
+
+  check(ls, TK_JAVA_WHILE); next(ls); /* 'while' */
   check(ls, '('); next(ls);
 
+  expdesc cond;
+  expr(ls, &cond);
+  luaK_goiftrue(ls->fs, &cond);
+  int j_false = cond.f;
+
+  check(ls, ')'); next(ls);
+  skip_semicolon(ls);
+
+  /* jump back to body if condition true */
+  luaK_codeAsBx(ls->fs, OP_JMP, 0, body_pc - ls->fs->pc - 1);
+  luaK_patchtohere(ls->fs, j_false);
+
+  leaveblock(ls->fs);
+}
+
+/* for statement (numeric and enhanced) */
+static void for_statement(JLexState *ls) {
+  next(ls);
+  check(ls, '('); next(ls);
+
+  /* Check for enhanced for: for (Type var : collection) */
+  int is_enhanced = 0;
+  /* peek ahead: if we see type + name + ':', it's enhanced for */
+  if (is_type_token(ls->t.token) || ls->t.token == TK_JAVA_NAME) {
+    int t1 = ls->t.token;
+    int la1 = jlex_lookahead(ls);
+    if (la1 == TK_JAVA_NAME) {
+      /* "Type Name" - check if next after that is ':' */
+      /* consume type */
+      next(ls);
+      int la2 = jlex_lookahead(ls);
+      if (la2 == ':') {
+        /* enhanced for: for (Type var : expr) */
+        is_enhanced = 1;
+      }
+      /* we've consumed type, name is next token */
+    } else if (t1 == TK_JAVA_NAME && la1 == TK_JAVA_NAME) {
+      /* "Type Name" pattern */
+      next(ls); /* skip type */
+      if (jlex_lookahead(ls) == ':') {
+        is_enhanced = 1;
+      }
+    }
+  }
+
+  if (is_enhanced) {
+    /* Enhanced for: for (Type var : expr) { ... }
+     * Compile as: local _coll = expr; local _i = 1; local _lim = #_coll;
+     *              while _i <= _lim do var = _coll[_i]; ...; _i++ end */
+    /* type token already consumed, current token is var name */
+    if (ls->t.token != TK_JAVA_NAME)
+      jlex_syntaxerror(ls, "expected variable name in for-each");
+    TString *varname = ls->t.seminfo.ts;
+    next(ls);
+
+    check(ls, ':'); next(ls);
+
+    /* collection expression */
+    expdesc coll;
+    expr(ls, &coll);
+    check(ls, ')'); next(ls);
+
+    JBlockCnt bl;
+    enterblock(ls->fs, &bl, 1);
+
+    /* allocate loop variable FIRST (so it doesn't overlap with temp regs) */
+    int varreg = new_localvar(ls->fs, varname);
+
+    /* allocate temp registers past all active locals */
+    if (ls->fs->freereg < ls->fs->nactvar)
+      ls->fs->freereg = ls->fs->nactvar;
+    int coll_reg = ls->fs->freereg;
+    exp2reg(ls->fs, &coll, coll_reg);
+    int idx_reg = coll_reg + 1;
+    int lim_reg = coll_reg + 2;
+
+    /* idx = 1; limit = #collection */
+    int k1 = luaK_intK(ls->fs, 1);
+    luaK_codeABx(ls->fs, OP_LOADK, idx_reg, (unsigned int)k1);
+    luaK_codeABC(ls->fs, OP_LEN, lim_reg, coll_reg, 0);
+
+    ls->fs->freereg = coll_reg + 3;
+
+    int loop_start = ls->fs->pc;
+
+    /* if idx <= limit → continue (skip next), else jump to exit */
+    luaK_codeABC(ls->fs, OP_LE, 0, idx_reg, lim_reg);
+    int exit_jmp = luaK_jump(ls->fs);
+
+    /* var = collection[idx] */
+    luaK_codeABC(ls->fs, OP_GETTABLE, varreg, coll_reg, idx_reg);
+
+    block(ls);  /* loop body */
+
+    /* idx++ */
+    luaK_codeABC(ls->fs, OP_ADD, idx_reg, idx_reg, k1 | BITRK);
+
+    /* jump back to condition check */
+    luaK_patchlist(ls->fs, luaK_jump(ls->fs), loop_start);
+
+    /* exit: */
+    luaK_patchtohere(ls->fs, exit_jmp);
+
+    leaveblock(ls->fs);
+    ls->fs->freereg = coll_reg;
+    return;
+  }
+
   /* init: int i = expr */
-  if (ls->t.token == TK_JAVA_INT) next(ls);
+  if (is_type_token(ls->t.token)) next(ls);
   if (ls->t.token != TK_JAVA_NAME)
     jlex_syntaxerror(ls, "expected variable name in for");
   TString *varname = ls->t.seminfo.ts;
@@ -525,25 +818,24 @@ static void for_statement(JLexState *ls) {
 
   check(ls, ';'); next(ls);
 
-  /* condition: i < expr */
-  int condreg = ls->fs->freereg;
+  /* condition: i < expr (compile as boolean test for while-style loop) */
+  int cond_pc = ls->fs->pc;  /* save PC where condition bytecodes start */
   expdesc cond;
   expr(ls, &cond);
-  luaK_exp2nextreg(ls->fs, &cond);
-  int limitreg = cond.u.info;
-  ls->fs->freereg = condreg + 2;
 
+  /* detect step type (i++ or i--) before consuming tokens */
+  int step_is_inc = 1;  /* default: i++ */
   check(ls, ';'); next(ls);
-
-  /* step: consume step expression (always ++ / i++ for now) */
   if (ls->t.token != ')') {
     if (ls->t.token == TK_JAVA_INC || ls->t.token == TK_JAVA_DEC) {
+      step_is_inc = (ls->t.token == TK_JAVA_INC);
       next(ls);
     } else if (ls->t.token == TK_JAVA_NAME) {
       next(ls);
-      if (ls->t.token == TK_JAVA_INC || ls->t.token == TK_JAVA_DEC)
+      if (ls->t.token == TK_JAVA_INC || ls->t.token == TK_JAVA_DEC) {
+        step_is_inc = (ls->t.token == TK_JAVA_INC);
         next(ls);
-      else {
+      } else {
         while (ls->t.token != ')' && ls->t.token != TK_JAVA_EOS)
           next(ls);
       }
@@ -551,32 +843,154 @@ static void for_statement(JLexState *ls) {
   }
   check(ls, ')'); next(ls);
 
-  /* Emit FORPREP / FORLOOP (Lua numeric for) */
   JBlockCnt bl;
   enterblock(ls->fs, &bl, 1);
 
-  /* store limit in varreg+1, step in varreg+2 */
-  ls->fs->freereg = varreg + 3;
-  luaK_codeABC(ls->fs, OP_MOVE, varreg + 1, limitreg, 0);
-  int kstep = luaK_intK(ls->fs, 1);
-  luaK_codeABx(ls->fs, OP_LOADK, varreg + 2, (unsigned int)kstep);
-
-  int prep_pc = ls->fs->pc;
-  luaK_codeAsBx(ls->fs, OP_FORPREP, varreg, 0);
+  /* Compile as while-style loop:
+   *   cond: if cond false → jump past loop
+   *   body
+   *   step: i = i +/- 1
+   *   jump back to cond
+   *   end:
+   */
+  luaK_goiftrue(ls->fs, &cond);  /* cond.t→here (body), cond.f→exit jumps */
 
   block(ls);
 
-  /* FORLOOP jumps back */
-  luaK_codeAsBx(ls->fs, OP_FORLOOP, varreg, prep_pc - ls->fs->pc - 1);
-  /* fix FORPREP */
-  SETARG_sBx(ls->fs->f->code[prep_pc], ls->fs->pc - prep_pc - 1);
+  /* step: i++ or i-- */
+  int k1 = luaK_intK(ls->fs, 1);
+  if (step_is_inc)
+    luaK_codeABC(ls->fs, OP_ADD, varreg, varreg, k1 | BITRK);
+  else
+    luaK_codeABC(ls->fs, OP_SUB, varreg, varreg, k1 | BITRK);
+
+  /* jump back to re-evaluate condition */
+  luaK_patchlist(ls->fs, luaK_jump(ls->fs), cond_pc);
+
+  /* false exits go past the loop */
+  luaK_patchtohere(ls->fs, cond.f);
 
   leaveblock(ls->fs);
 }
 
+/* switch statement */
+static void switch_statement(JLexState *ls) {
+  /* switch (expr) { case val: stmts; break; ... default: stmts; } */
+  /* Compile as: if (val == case1) goto body1; elseif ... else goto default;
+   * Each body ends with a jump past all cases (unless fallthrough) */
+  next(ls); /* skip 'switch' */
+  check(ls, '('); next(ls);
+
+  expdesc switch_val;
+  expr(ls, &switch_val);
+  int valreg = ls->fs->freereg;
+  luaK_exp2nextreg(ls->fs, &switch_val);
+  valreg = switch_val.u.info;
+
+  check(ls, ')'); next(ls);
+  check(ls, '{'); next(ls);
+
+  /* We'll build a chain of if/elseif comparisons.
+   * Collect case values and bodies. */
+  int j_end_all = NO_JUMP;  /* jump past all cases (from break) */
+  int j_prev_false = NO_JUMP;  /* chain of false jumps */
+  int has_default = 0;
+  int default_body_pc = -1;
+  int *j_ends = NULL;  /* patch list for break jumps */
+  int nj_ends = 0;
+
+  while (ls->t.token == TK_JAVA_CASE || ls->t.token == TK_JAVA_DEFAULT) {
+    if (ls->t.token == TK_JAVA_DEFAULT) {
+      has_default = 1;
+      next(ls);
+      check(ls, ':'); next(ls);
+      /* patch all pending false jumps to here */
+      if (j_prev_false != NO_JUMP) {
+        luaK_patchtohere(ls->fs, j_prev_false);
+        j_prev_false = NO_JUMP;
+      }
+      /* parse statements until break or next case */
+      while (ls->t.token != TK_JAVA_CASE && ls->t.token != TK_JAVA_DEFAULT &&
+             ls->t.token != '}') {
+        if (ls->t.token == TK_JAVA_BREAK) {
+          next(ls);
+          skip_semicolon(ls);
+          /* jump past all cases */
+          int j = luaK_jump(ls->fs);
+          luaK_concat(ls->fs, &j_end_all, j);
+          break;
+        }
+        statement(ls);
+      }
+    } else {
+      /* case value: */
+      next(ls);
+      expdesc case_val;
+      expr(ls, &case_val);
+      luaK_exp2nextreg(ls->fs, &case_val);
+      int case_reg = case_val.u.info;
+
+      check(ls, ':'); next(ls);
+
+      /* emit: if (switch_val == case_val) goto body */
+      /* Use OPR_EQ comparison: emit OP_EQ(valreg, case_reg, 0) then test */
+      int eq_instr = luaK_codeABC(ls->fs, OP_EQ, 1, valreg, case_reg);
+      /* if false (not equal), jump past body */
+      int j_false = luaK_jump(ls->fs);
+      /* if true, fall through to body */
+      /* Patch OP_EQ result: jump if false */
+      {
+        Instruction *pc = &ls->fs->f->code[eq_instr];
+        SETARG_C(*pc, 1);  /* jump if false */
+      }
+
+      /* parse body */
+      int j_break = NO_JUMP;
+      while (ls->t.token != TK_JAVA_CASE && ls->t.token != TK_JAVA_DEFAULT &&
+             ls->t.token != '}') {
+        if (ls->t.token == TK_JAVA_BREAK) {
+          next(ls);
+          skip_semicolon(ls);
+          j_break = luaK_jump(ls->fs);
+          break;
+        }
+        statement(ls);
+      }
+      /* jump past all remaining cases (end of this case body) */
+      int j_body_end = luaK_jump(ls->fs);
+      /* patch the false jump here */
+      luaK_patchtohere(ls->fs, j_false);
+      /* chain the body-end jump */
+      luaK_concat(ls->fs, &j_end_all, j_body_end);
+      if (j_break != NO_JUMP)
+        luaK_concat(ls->fs, &j_end_all, j_break);
+    }
+  }
+
+  check(ls, '}'); next(ls);
+
+  /* patch all jumps past the switch */
+  luaK_patchtohere(ls->fs, j_end_all);
+
+  (void)j_prev_false; (void)has_default; (void)default_body_pc;
+  (void)j_ends; (void)nj_ends;
+}
+
+/* break statement */
+static void break_statement(JLexState *ls) {
+  next(ls);
+  skip_semicolon(ls);
+  /* Find enclosing loop block and jump past it.
+   * For now we use a simple approach: just generate a forward jump
+   * that will be patched later. But proper break requires tracking loop exits.
+   * Simplified: generate a jump that will be patched in the loop statement. */
+  (void)ls;
+  /* TODO: proper break handling */
+}
+
 /* return statement */
 static void return_statement(JLexState *ls) {
-  next(ls); /* skip 'return' */
+  next(ls);
   if (ls->t.token == ';' || ls->t.token == '}') {
     luaK_ret(ls->fs, 0, 0);
     skip_semicolon(ls);
@@ -589,11 +1003,141 @@ static void return_statement(JLexState *ls) {
   }
 }
 
-/* expression statement */
+/* try-catch-finally */
+static void try_statement(JLexState *ls) {
+  /* For now: skip entire try/catch/finally block.
+   * Proper implementation requires exception handling which is complex. */
+  next(ls); /* skip 'try' */
+  /* skip try body */
+  int brace_depth = 0;
+  while (ls->t.token != TK_JAVA_EOS) {
+    if (ls->t.token == '{') { brace_depth++; next(ls); continue; }
+    if (ls->t.token == '}') {
+      if (brace_depth == 0) break;
+      brace_depth--;
+      next(ls);
+      continue;
+    }
+    if (ls->t.token == TK_JAVA_CATCH && brace_depth == 0) {
+      /* skip catch block */
+      next(ls); /* skip 'catch' */
+      if (ls->t.token == '(') {
+        while (ls->t.token != ')' && ls->t.token != TK_JAVA_EOS) next(ls);
+      }
+      if (ls->t.token == ')') next(ls);
+      /* skip catch body */
+      if (ls->t.token == '{') {
+        next(ls); brace_depth = 1;
+        while (brace_depth > 0 && ls->t.token != TK_JAVA_EOS) {
+          if (ls->t.token == '{') brace_depth++;
+          else if (ls->t.token == '}') brace_depth--;
+          next(ls);
+        }
+      }
+      continue;
+    }
+    if (ls->t.token == TK_JAVA_FINALLY && brace_depth == 0) {
+      next(ls); /* skip 'finally' */
+      if (ls->t.token == '{') {
+        next(ls); brace_depth = 1;
+        while (brace_depth > 0 && ls->t.token != TK_JAVA_EOS) {
+          if (ls->t.token == '{') brace_depth++;
+          else if (ls->t.token == '}') brace_depth--;
+          next(ls);
+        }
+      }
+      break;
+    }
+    next(ls);
+  }
+  /* emit a no-op for the try block */
+  /* Just emit a println to show we hit this */
+  {
+    int reg = ls->fs->freereg;
+    emit_string_const(ls->fs, "  (try/catch skipped)", reg);
+    luaK_codeABC(ls->fs, OP_GETTABUP, reg + 1, 0,
+      (unsigned int)(luaK_stringK(ls->fs, luaS_new(ls->L, "System")) | BITRK));
+    int fk = luaK_stringK(ls->fs, luaS_new(ls->L, "out"));
+    luaK_codeABC(ls->fs, OP_GETTABLE, reg + 1, reg + 1, fk | BITRK);
+    fk = luaK_stringK(ls->fs, luaS_new(ls->L, "println"));
+    luaK_codeABC(ls->fs, OP_GETTABLE, reg + 1, reg + 1, fk | BITRK);
+    luaK_codeABC(ls->fs, OP_MOVE, reg + 2, reg + 1, 0);
+    luaK_codeABC(ls->fs, OP_MOVE, reg + 3, reg, 0);
+    luaK_codeABC(ls->fs, OP_CALL, reg + 2, 2, 1);
+    ls->fs->freereg = reg + 1;
+  }
+}
+
+/* expression statement (also handles assignments) */
 static void expr_statement(JLexState *ls) {
   expdesc v;
   expr(ls, &v);
+
+  /* Handle postfix ++ and -- (e.g. j++) */
+  if (ls->t.token == TK_JAVA_INC || ls->t.token == TK_JAVA_DEC) {
+    int is_inc = (ls->t.token == TK_JAVA_INC);
+    next(ls);
+    /* emit increment/decrement for the variable */
+    if (v.k == VNONRELOC) {
+      int k1 = luaK_intK(ls->fs, 1);
+      luaK_codeABC(ls->fs, is_inc ? OP_ADD : OP_SUB,
+                   v.u.info, v.u.info, k1 | BITRK);
+    }
+    skip_semicolon(ls);
+    return 0;
+  }
+
+  /* Check for assignment: x = expr */
+  if (ls->t.token == '=') {
+    next(ls);
+    expdesc rhs;
+    expr(ls, &rhs);
+    if (v.k == VNONRELOC)
+      exp2reg(ls->fs, &rhs, v.u.info);
+    skip_semicolon(ls);
+    return 0;
+  }
+
+  /* Check for compound assignment: +=, -=, *=, /=, %= */
+  if (ls->t.token == TK_JAVA_PLUSEQ || ls->t.token == TK_JAVA_MINEQ ||
+      ls->t.token == TK_JAVA_MULEQ || ls->t.token == TK_JAVA_DIVEQ ||
+      ls->t.token == TK_JAVA_MODEQ) {
+    int op_token = ls->t.token;
+    next(ls);
+    expdesc rhs;
+    expr(ls, &rhs);
+    if (v.k == VNONRELOC) {
+      int rreg = ls->fs->freereg;
+      exp2reg(ls->fs, &rhs, rreg);
+      ls->fs->freereg = rreg + 1;
+      int lua_op;
+      switch (op_token) {
+        case TK_JAVA_PLUSEQ: lua_op = OP_ADD; break;
+        case TK_JAVA_MINEQ: lua_op = OP_SUB; break;
+        case TK_JAVA_MULEQ: lua_op = OP_MUL; break;
+        case TK_JAVA_DIVEQ: lua_op = OP_DIV; break;
+        case TK_JAVA_MODEQ: lua_op = OP_MOD; break;
+        default:  lua_op = OP_ADD; break;
+      }
+      luaK_codeABC(ls->fs, lua_op, v.u.info, v.u.info, rreg);
+    }
+    skip_semicolon(ls);
+    return 0;
+  }
+
   skip_semicolon(ls);
+}
+
+/* throw statement */
+static void throw_statement(JLexState *ls) {
+  next(ls); /* skip 'throw' */
+  /* skip the thrown expression */
+  while (ls->t.token != ';' && ls->t.token != TK_JAVA_EOS)
+    next(ls);
+  skip_semicolon(ls);
+  /* Emit error */
+  luaK_codeABC(ls->fs, OP_GETTABUP, 0, 0,
+    (unsigned int)(luaK_stringK(ls->fs, luaS_new(ls->L, "System")) | BITRK));
 }
 
 /* single statement dispatch */
@@ -603,12 +1147,14 @@ static void statement(JLexState *ls) {
   /* check for type + name pattern (variable declaration) */
   if (first == TK_JAVA_INT || first == TK_JAVA_STRING ||
       first == TK_JAVA_VOID || first == TK_JAVA_BOOLEAN ||
+      first == TK_JAVA_CHAR || first == TK_JAVA_DOUBLE ||
       first == TK_JAVA_PUBLIC || first == TK_JAVA_PRIVATE ||
       first == TK_JAVA_STATIC || first == TK_JAVA_FINAL ||
       first == TK_JAVA_PROTECTED) {
     int lookahead = jlex_lookahead(ls);
-    if (lookahead == TK_JAVA_NAME ||
+    if (lookahead == TK_JAVA_NAME || lookahead == '[' ||
         lookahead == TK_JAVA_INT || lookahead == TK_JAVA_STRING ||
+        lookahead == TK_JAVA_CHAR || lookahead == TK_JAVA_DOUBLE ||
         lookahead == TK_JAVA_STATIC || lookahead == TK_JAVA_PUBLIC ||
         lookahead == TK_JAVA_PRIVATE) {
       var_declaration(ls);
@@ -616,12 +1162,57 @@ static void statement(JLexState *ls) {
     }
   }
 
+  /* check for Name type (e.g. "List<String>" vs "System.out.println()")
+   * Distinguish type-declaration from expression:
+   * - "Name <..." or "Name [" → type (generics or array)
+   * - "Name ." → expression (qualified access like System.out)
+   * - "Name (" → expression (method call)
+   * - "Name Name" → could be either. Check if 3rd token is "(".
+   *   We can't use double-lookahead (jlex_lookahead only stores one).
+   *   Instead: "Name Name" is treated as var decl if 2nd Name is followed
+   *   by something that looks like a variable (not '(').
+   *   But since we can only peek one token ahead, we conservatively
+   *   treat "Name Name" as a potential type+var decl and let
+   *   var_declaration handle it. var_declaration will parse the type
+   *   and if the next thing is not a valid var decl, it'll error.
+   *   However, we must NOT treat "Name ." as var decl — that's always expr.
+   */
+  if (first == TK_JAVA_NAME) {
+    int la = jlex_lookahead(ls);
+    if (la == '<' || la == '[') {
+      /* "Name<...>" or "Name[]" → definitely a type */
+      var_declaration(ls);
+      return;
+    }
+    if (la == '.') {
+      /* "Name." → qualified expression (System.out, obj.field, etc.)
+       * NOT a type declaration. Keep lookahead (it stores '.'),
+       * and fall through to expr_statement which will consume it. */
+      /* fall through to switch below */
+    } else if (la == '(') {
+      /* "Name(" → method call, not var decl.
+       * Keep lookahead, fall through to expr_statement. */
+      /* fall through to switch below */
+    } else if (la == TK_JAVA_NAME) {
+      /* "Name Name" → likely type + variable name. var_declaration. */
+      var_declaration(ls);
+      return;
+    }
+    /* For other la values (=, ;, +, etc.), it's an expression.
+     * Keep lookahead, fall through to expr_statement. */
+  }
+
   switch (first) {
     case '{':  block(ls); break;
     case TK_JAVA_IF:    if_statement(ls); break;
     case TK_JAVA_WHILE: while_statement(ls); break;
+    case TK_JAVA_DO:    do_while_statement(ls); break;
     case TK_JAVA_FOR:   for_statement(ls); break;
+    case TK_JAVA_SWITCH: switch_statement(ls); break;
     case TK_JAVA_RETURN: return_statement(ls); break;
+    case TK_JAVA_BREAK: break_statement(ls); break;
+    case TK_JAVA_TRY:   try_statement(ls); break;
+    case TK_JAVA_THROW: throw_statement(ls); break;
     case TK_JAVA_INTLIT:
     case TK_JAVA_FLOATLIT:
     case TK_JAVA_STRLIT:
@@ -630,8 +1221,9 @@ static void statement(JLexState *ls) {
     case '(': case '!': case '-':
     case TK_JAVA_TRUE: case TK_JAVA_FALSE:
     case TK_JAVA_NULL:
+    case TK_JAVA_THIS:
       expr_statement(ls); break;
-    case ';': next(ls); break;  /* empty statement */
+    case ';': next(ls); break;
     default:
       jlex_syntaxerror(ls, "unexpected statement");
   }
@@ -639,54 +1231,130 @@ static void statement(JLexState *ls) {
 
 /* ---------- METHOD / CLASS PARSER ---------- */
 
-/* parse a Java method: public static int add(int a, int b) { ... } */
-static void method_definition(JLexState *ls, FuncState *fs, int class_reg) {
-  (void)fs;  /* fs == ls->fs after restore; used for clarity */
-  /* skip modifiers (public, static, etc.) */
-  while (ls->t.token == TK_JAVA_PUBLIC || ls->t.token == TK_JAVA_PRIVATE ||
-         ls->t.token == TK_JAVA_PROTECTED || ls->t.token == TK_JAVA_STATIC ||
-         ls->t.token == TK_JAVA_FINAL) {
-    next(ls);
-  }
-
-  /* skip return type */
-  if (ls->t.token == TK_JAVA_VOID || ls->t.token == TK_JAVA_INT ||
-      ls->t.token == TK_JAVA_STRING || ls->t.token == TK_JAVA_BOOLEAN) {
-    next(ls);
-  }
-
-  /* method name */
-  if (ls->t.token != TK_JAVA_NAME)
-    jlex_syntaxerror(ls, "expected method name");
-  TString *method_name = ls->t.seminfo.ts;
-  next(ls);
-
-  /* parameters */
+/*
+** Parse method parameters and return parameter count + register them.
+** Returns: number of parameters registered.
+** Parameters start at register 0 (method body's first local slots).
+*/
+static int parse_method_params(JLexState *ls, int *has_varargs, TString **vararg_name) {
+  int nparams = 0;
+  *has_varargs = 0;
+  *vararg_name = NULL;
   check(ls, '('); next(ls);
   while (ls->t.token != ')') {
     /* skip param type */
-    if (ls->t.token == TK_JAVA_INT || ls->t.token == TK_JAVA_STRING ||
-        ls->t.token == TK_JAVA_BOOLEAN || ls->t.token == TK_JAVA_NAME) {
+    if (is_type_token(ls->t.token)) next(ls);
+    else if (ls->t.token == TK_JAVA_NAME) {
       next(ls);
-    }
-    /* skip param name */
-    while (ls->t.token == '[') { next(ls); check(ls, ']'); next(ls); }
-    if (ls->t.token == TK_JAVA_NAME) next(ls);
-    else if (ls->t.token == '.') { /* qualified type like String[] */
       while (ls->t.token == '.') {
         next(ls);
         if (ls->t.token == TK_JAVA_NAME) next(ls);
       }
-      while (ls->t.token == '[') { next(ls); check(ls, ']'); next(ls); }
-      if (ls->t.token == TK_JAVA_NAME) next(ls);
+    }
+    /* skip array brackets */
+    while (ls->t.token == '[') { next(ls); check(ls, ']'); next(ls); }
+    /* check for varargs '...' */
+    int is_vararg = 0;
+    if (ls->t.token == '.') {
+      while (ls->t.token == '.') next(ls);
+      is_vararg = 1;
+      *has_varargs = 1;
+    }
+    /* param name */
+    if (ls->t.token == TK_JAVA_NAME) {
+      TString *pname = ls->t.seminfo.ts;
+      next(ls);
+      if (is_vararg) {
+        *vararg_name = pname;  /* save name, emit packing code in caller */
+      } else {
+        new_localvar(ls->fs, pname);
+        nparams++;
+      }
     }
     if (ls->t.token == ',') next(ls);
   }
   next(ls); /* skip ) */
+  return nparams;
+}
 
-  /* create nested FuncState for the method body */
+/* parse a Java method (or field if no '(' follows).
+ * Returns 1 if this is a constructor, 0 otherwise. */
+static int method_definition(JLexState *ls, FuncState *fs, int class_reg,
+                              TString *class_name) {
+  (void)fs;
+
+  /* Check if this is a constructor: name == class name and no return type */
+  int is_ctor = 0;
+
+  /* skip modifiers, track static */
+  int is_static = 0;
+  int saw_return_type = 0;
+  while (ls->t.token == TK_JAVA_PUBLIC || ls->t.token == TK_JAVA_PRIVATE ||
+         ls->t.token == TK_JAVA_PROTECTED || ls->t.token == TK_JAVA_STATIC ||
+         ls->t.token == TK_JAVA_FINAL) {
+    if (ls->t.token == TK_JAVA_STATIC) is_static = 1;
+    next(ls);
+  }
+
+  /* check for return type or constructor */
+  TString *method_name = NULL;
+  if (is_type_token(ls->t.token)) {
+    saw_return_type = 1;
+    next(ls); /* skip return type */
+  } else if (ls->t.token == TK_JAVA_NAME) {
+    /* could be constructor or return type */
+    int la = jlex_lookahead(ls);
+    if (la == TK_JAVA_NAME || la == '<') {
+      /* "ClassName methodName" → return type + method name */
+      saw_return_type = 1;
+      next(ls); /* skip return type */
+      /* skip generics */
+      if (ls->t.token == '<') {
+        while (ls->t.token != '>' && ls->t.token != TK_JAVA_EOS) next(ls);
+        if (ls->t.token == '>') next(ls);
+      }
+    }
+    /* else: "methodName(" → method name (constructor or no return type) */
+  }
+
+  /* method/field name */
+  if (ls->t.token != TK_JAVA_NAME)
+    jlex_syntaxerror(ls, "expected method name");
+  method_name = ls->t.seminfo.ts;
+  /* Detect constructor: same name as class, no return type, not static */
+  if (class_name != NULL && !is_static && !saw_return_type &&
+      method_name == class_name) {
+    is_ctor = 1;
+  }
+  next(ls);
+
+  /* Handle field declaration: no '(' after name */
+  if (ls->t.token != '(') {
+    /* This is a field declaration, not a method.
+     * Skip array brackets, initializer, and semicolon. */
+    while (ls->t.token == '[') { next(ls); check(ls, ']'); next(ls); }
+    if (ls->t.token == '=') {
+      next(ls);
+      /* parse initializer expression and store in class table */
+      expdesc v;
+      expr(ls, &v);
+      int reg = ls->fs->freereg;
+      exp2reg(ls->fs, &v, reg);
+      int fk = luaK_stringK(ls->fs, method_name);
+      luaK_codeABC(ls->fs, OP_SETTABLE, class_reg, fk | BITRK, reg);
+      /* if static field, also expose in _ENV for unqualified access */
+      if (is_static) {
+        luaK_codeABC(ls->fs, OP_SETTABUP, 0, fk | BITRK, reg);
+      }
+      ls->fs->freereg = reg;
+    }
+    skip_semicolon(ls);
+    return 0;
+  }
+
+  /* create nested FuncState */
   FuncState method_fs;
-  struct LexState method_mini_ls;  /* lcode.c needs fs->ls->L */
+  struct LexState method_mini_ls;
   Proto *proto = luaF_newproto(ls->L);
   proto->source = ls->source;
   luaC_objbarrier(ls->L, proto, proto->source);
@@ -695,7 +1363,7 @@ static void method_definition(JLexState *ls, FuncState *fs, int class_reg) {
   method_fs.f = proto;
   method_fs.prev = ls->fs;
   method_mini_ls.L = ls->L;
-  method_mini_ls.h = ls->h;  /* share parent constant cache */
+  method_mini_ls.h = ls->h;
   method_fs.ls = &method_mini_ls;
   method_fs.bl = NULL;
   method_fs.pc = 0;
@@ -713,8 +1381,7 @@ static void method_definition(JLexState *ls, FuncState *fs, int class_reg) {
   method_fs.f->is_vararg = 0;
   method_fs.f->numparams = 0;
 
-  /* Give the method an _ENV upvalue (captured from enclosing closure).
-   * This allows the method body to access globals like System. */
+  /* _ENV upvalue */
   {
     Proto *mf = method_fs.f;
     luaM_growvector(ls->L, mf->upvalues, method_fs.nups, mf->sizeupvalues,
@@ -722,25 +1389,69 @@ static void method_definition(JLexState *ls, FuncState *fs, int class_reg) {
     int oldsize = mf->sizeupvalues;
     while (oldsize < (int)mf->sizeupvalues)
       mf->upvalues[oldsize++].name = NULL;
-    mf->upvalues[method_fs.nups].instack = 0;  /* from enclosing closure */
-    mf->upvalues[method_fs.nups].idx = 0;       /* parent upvalue[0] = _ENV */
+    mf->upvalues[method_fs.nups].instack = 0;
+    mf->upvalues[method_fs.nups].idx = 0;
     mf->upvalues[method_fs.nups].name = ls->envn;
     luaC_objbarrier(ls->L, mf, ls->envn);
     method_fs.nups++;
     mf->sizeupvalues = method_fs.nups;
   }
 
-  /* save parent context, set method as current */
+  /* Constructor and instance methods: 'this' is the first parameter (R0).
+   * Reserve R0 so explicit params start at R1.
+   * Must happen AFTER switching fs to method_fs. */
+
   FuncState *saved_fs = ls->fs;
   ls->fs = &method_fs;
 
   JBlockCnt bl;
   enterblock(ls->fs, &bl, 0);
 
-  /* parse method body */
-  block(ls);
+  /* For non-static methods, reserve R0 for 'self'/'this' */
+  if (!is_static) {
+    new_localvar(ls->fs, luaS_newliteral(ls->L, "this"));
+  }
 
-  /* final return (if not already present) */
+  /* parse parameters (explicit params start at R1 for non-static) */
+  int has_varargs = 0;
+  TString *vararg_name = NULL;
+  int nparams = parse_method_params(ls, &has_varargs, &vararg_name);
+  if (!is_static) nparams++;  /* include 'this' as first param */
+
+  /* skip 'throws' clause */
+  while (ls->t.token == TK_JAVA_THROWS) {
+    next(ls);
+    while (ls->t.token == TK_JAVA_NAME) {
+      next(ls);
+      if (ls->t.token == ',') next(ls); else break;
+    }
+  }
+
+  /* set varargs info before emitting any varargs-related code */
+  method_fs.f->numparams = (lu_byte)nparams;
+  method_fs.f->is_vararg = has_varargs ? 1 : 0;
+
+  /* if varargs method, emit packing code: name = {...} */
+  if (has_varargs && vararg_name) {
+    int pack_reg = ls->fs->freereg;
+    luaK_codeABC(ls->fs, OP_NEWTABLE, pack_reg, 0, 0);
+    luaK_codeABC(ls->fs, OP_VARARG, pack_reg + 1, 0, 0);
+    luaK_codeABC(ls->fs, OP_SETLIST, pack_reg, 0, 1);
+    new_localvar(ls->fs, vararg_name);
+    if (ls->fs->freereg < pack_reg + 2)
+      ls->fs->freereg = pack_reg + 2;
+  }
+
+  /* parse body or skip abstract/native */
+  if (ls->t.token == '{') {
+    block(ls);
+  } else if (ls->t.token == ';') {
+    next(ls); /* abstract or interface method */
+    /* restore and skip */
+    ls->fs = saved_fs;
+    return is_ctor;
+  }
+
   luaK_ret(ls->fs, 0, 0);
   leaveblock(ls->fs);
 
@@ -753,49 +1464,303 @@ static void method_definition(JLexState *ls, FuncState *fs, int class_reg) {
   method_fs.f->linedefined = 0;
   method_fs.f->lastlinedefined = 0;
   method_fs.f->maxstacksize = method_fs.freereg;
+  method_fs.f->numparams = (lu_byte)nparams;  /* already set above, but ensure consistency */
 
-  /* register this proto as a sub-function in parent */
+  /* register proto in parent */
   int proto_idx = saved_fs->np;
-  luaM_growvector(ls->L, saved_fs->f->p, proto_idx, saved_fs->np,
+  luaM_growvector(ls->L, saved_fs->f->p, proto_idx, saved_fs->f->sizep,
                   Proto *, MAXARG_Bx, "functions");
   saved_fs->f->p[proto_idx] = proto;
   saved_fs->np++;
 
-  /* restore parent context */
   ls->fs = saved_fs;
 
-  /* generate OP_CLOSURE in parent to create the closure */
+  /* generate OP_CLOSURE */
   int reg = ls->fs->freereg;
   luaK_codeABx(ls->fs, OP_CLOSURE, reg, (unsigned int)proto_idx);
   ls->fs->freereg = reg + 1;
 
-  /* store in class table: class_reg[method_name] = closure */
-  /* SETTABLE A B C: R(A)[RK(B)] := RK(C); B=k|BITRK means K(k) */
+  /* store in class table */
   int mk = luaK_stringK(ls->fs, method_name);
   luaK_codeABC(ls->fs, OP_SETTABLE, class_reg, mk | BITRK, reg);
+
+  /* if static, also expose in _ENV for unqualified access (e.g. add(5,7)) */
+  if (is_static) {
+    luaK_codeABC(ls->fs, OP_SETTABUP, 0, mk | BITRK, reg);
+  }
+
+  /* if constructor, also store as "new" for lookup */
+  if (is_ctor) {
+    int nk = luaK_stringK(ls->fs, luaS_newliteral(ls->L, "new"));
+    luaK_codeABC(ls->fs, OP_SETTABLE, class_reg, nk | BITRK, reg);
+  }
+
+  ls->fs->freereg = reg;
+  return is_ctor;
 }
 
-/* parse a Java class: class ClassName { methods... } */
+/* parse an enum inside class body */
+static void enum_definition(JLexState *ls, int class_reg) {
+  next(ls); /* skip 'enum' */
+
+  if (ls->t.token != TK_JAVA_NAME)
+    jlex_syntaxerror(ls, "expected enum name");
+  TString *enum_name = ls->t.seminfo.ts;
+  next(ls);
+
+  check(ls, '{'); next(ls);
+
+  int enum_table_reg = ls->fs->freereg;
+  luaK_codeABC(ls->fs, OP_NEWTABLE, enum_table_reg, 0, 0);
+  ls->fs->freereg = enum_table_reg + 2;  /* reserve reg+1 for temp values */
+
+  int idx = 0;
+  while (ls->t.token != '}' && ls->t.token != TK_JAVA_EOS) {
+    if (ls->t.token == TK_JAVA_NAME) {
+      TString *cname = ls->t.seminfo.ts;
+      next(ls);
+
+      /* store: enum_table[cname] = idx (ordinal) */
+      int ik = luaK_intK(ls->fs, idx);
+      luaK_codeABx(ls->fs, OP_LOADK, enum_table_reg + 1, (unsigned int)ik);
+      int fk = luaK_stringK(ls->fs, cname);
+      luaK_codeABC(ls->fs, OP_SETTABLE, enum_table_reg, fk | BITRK, enum_table_reg + 1);
+
+      /* also make each constant globally accessible: _ENV[cname] = idx */
+      int gk = luaK_stringK(ls->fs, cname);
+      luaK_codeABC(ls->fs, OP_SETTABUP, 0, gk | BITRK, enum_table_reg + 1);
+
+      idx++;
+      if (ls->t.token == ',') next(ls);
+      else break;
+    } else if (ls->t.token == ';') {
+      next(ls);
+      /* enum may have methods/fields after ; */
+      while (ls->t.token != '}' && ls->t.token != TK_JAVA_EOS) {
+        if (ls->t.token == TK_JAVA_NAME || ls->t.token == TK_JAVA_PUBLIC ||
+            ls->t.token == TK_JAVA_PRIVATE || ls->t.token == TK_JAVA_STATIC) {
+          int la = jlex_lookahead(ls);
+          if (la == '(') {
+            /* method */
+            method_definition(ls, ls->fs, enum_table_reg, NULL);
+          } else {
+            /* skip */
+            next(ls);
+            while (ls->t.token != ';' && ls->t.token != '}' && ls->t.token != TK_JAVA_EOS)
+              next(ls);
+            if (ls->t.token == ';') next(ls);
+          }
+        } else {
+          next(ls);
+        }
+      }
+      break;
+    } else {
+      next(ls);
+    }
+  }
+  check(ls, '}'); next(ls);
+
+  /* store enum table as a field in the class table */
+  int fk = luaK_stringK(ls->fs, enum_name);
+  luaK_codeABC(ls->fs, OP_SETTABLE, class_reg, fk | BITRK, enum_table_reg);
+
+  /* also make the enum table globally accessible: _ENV[enum_name] = enum_table */
+  luaK_codeABC(ls->fs, OP_SETTABUP, 0, fk | BITRK, enum_table_reg);
+
+  ls->fs->freereg = enum_table_reg;
+}
+
+/* parse a Java class */
 static void class_definition(JLexState *ls, FuncState *fs) {
   next(ls); /* skip 'class' */
 
   if (ls->t.token != TK_JAVA_NAME)
     jlex_syntaxerror(ls, "expected class name");
-  /* TString *class_name = ls->t.seminfo.ts; */
+  TString *class_name = ls->t.seminfo.ts;
   next(ls);
+
+  /* skip extends/implements */
+  if (ls->t.token == TK_JAVA_EXTENDS || ls->t.token == TK_JAVA_IMPLEMENTS) {
+    next(ls);
+    while (ls->t.token == TK_JAVA_NAME) {
+      next(ls);
+      if (ls->t.token == ',') next(ls);
+      else break;
+    }
+  }
 
   /* create class table */
   int class_reg = fs->freereg;
   luaK_codeABC(fs, OP_NEWTABLE, class_reg, 0, 0);
   fs->freereg = class_reg + 1;
 
+  /* store class table in _ENV for 'new ClassName()' and static access */
+  {
+    int ck = luaK_stringK(fs, class_name);
+    luaK_codeABC(fs, OP_SETTABUP, 0, ck | BITRK, class_reg);
+  }
+
   check(ls, '{'); next(ls);
 
-  /* parse methods */
+  /* parse members, track if a constructor was defined */
+  int has_constructor = 0;
   while (ls->t.token != '}' && ls->t.token != TK_JAVA_EOS) {
-    method_definition(ls, fs, class_reg);
+    int first = ls->t.token;
+
+    /* enum (with optional modifiers) */
+    if (first == TK_JAVA_ENUM) {
+      enum_definition(ls, class_reg);
+      continue;
+    }
+    if (first == TK_JAVA_PUBLIC || first == TK_JAVA_PRIVATE ||
+        first == TK_JAVA_PROTECTED || first == TK_JAVA_STATIC) {
+      /* Check if next token after modifier is 'enum' */
+      int la = jlex_lookahead(ls);
+      if (la == TK_JAVA_ENUM) {
+        next(ls); /* skip modifier (consumes lookahead) */
+        enum_definition(ls, class_reg);
+        continue;
+      }
+      /* Lookahead was not 'enum'. Keep it — method_definition will
+       * consume it via next(ls) which uses lookahead first. */
+    }
+
+    /* method/constructor/field: use method_definition for everything */
+    if (first == TK_JAVA_PUBLIC || first == TK_JAVA_PRIVATE ||
+        first == TK_JAVA_PROTECTED || first == TK_JAVA_STATIC ||
+        first == TK_JAVA_FINAL || is_type_token(first) ||
+        first == TK_JAVA_NAME) {
+      if (method_definition(ls, fs, class_reg, class_name))
+        has_constructor = 1;
+      continue;
+    }
+
+    /* unknown token - skip */
+    next(ls);
   }
   check(ls, '}'); next(ls);
+
+  /* If no explicit constructor was defined, generate a default one.
+   * Default constructor: empty body, just returns (no-op). */
+  if (!has_constructor) {
+    /* Create minimal Proto for default constructor */
+    Proto *proto = luaF_newproto(ls->L);
+    proto->source = ls->source;
+    luaC_objbarrier(ls->L, proto, proto->source);
+    luaC_objbarrier(ls->L, fs->f, proto);
+
+    FuncState ctor_fs;
+    struct LexState ctor_mini_ls;
+    ctor_fs.f = proto;
+    ctor_fs.prev = fs;
+    ctor_mini_ls.L = ls->L;
+    ctor_mini_ls.h = ls->h;
+    ctor_fs.ls = &ctor_mini_ls;
+    ctor_fs.bl = NULL;
+    ctor_fs.pc = 0;
+    ctor_fs.lasttarget = 0;
+    ctor_fs.jpc = NO_JUMP;
+    ctor_fs.nk = 0;
+    ctor_fs.np = 0;
+    ctor_fs.firstlocal = 0;
+    ctor_fs.nlocvars = 0;
+    ctor_fs.nactvar = 0;
+    ctor_fs.nups = 0;
+    ctor_fs.freereg = 0;
+    ctor_fs.f->maxstacksize = 6;
+    ctor_fs.f->is_vararg = 0;
+    ctor_fs.f->numparams = 1;
+
+    /* _ENV upvalue */
+    {
+      Proto *mf = ctor_fs.f;
+      luaM_growvector(ls->L, mf->upvalues, ctor_fs.nups, mf->sizeupvalues,
+                      Upvaldesc, MAXUPVAL, "upvalues");
+      int oldsize = mf->sizeupvalues;
+      while (oldsize < (int)mf->sizeupvalues)
+        mf->upvalues[oldsize++].name = NULL;
+      mf->upvalues[ctor_fs.nups].instack = 0;
+      mf->upvalues[ctor_fs.nups].idx = 0;
+      mf->upvalues[ctor_fs.nups].name = ls->envn;
+      luaC_objbarrier(ls->L, mf, ls->envn);
+      ctor_fs.nups++;
+      mf->sizeupvalues = ctor_fs.nups;
+    }
+
+    FuncState *saved_fs = fs;
+    ls->fs = &ctor_fs;
+    JBlockCnt bl;
+    enterblock(ls->fs, &bl, 0);
+
+    /* 'this' param at R0 */
+    new_localvar(ls->fs, luaS_newliteral(ls->L, "this"));
+
+    /* Set up metatable on self inside the constructor:
+     *   local mt = {__index = _ENV[ClassName]}
+     *   _setmetatable(self, mt)
+     * Uses registers 1..5 as temporaries. */
+    {
+      /* R1 = _ENV[ClassName] — get the class table */
+      int kc = luaK_stringK(ls->fs, class_name);
+      luaK_codeABC(ls->fs, OP_GETTABUP, 1, 0, (unsigned int)(kc | BITRK));
+
+      /* R2 = {} — create metatable */
+      luaK_codeABC(ls->fs, OP_NEWTABLE, 2, 0, 0);
+
+      /* mt.__index = class_table */
+      int ki = luaK_stringK(ls->fs, luaS_newliteral(ls->L, "__index"));
+      luaK_codeABC(ls->fs, OP_SETTABLE, 2, (unsigned int)(ki | BITRK), 1);
+
+      /* R3 = _ENV["_setmetatable"] */
+      int ks = luaK_stringK(ls->fs, luaS_newliteral(ls->L, "_setmetatable"));
+      luaK_codeABC(ls->fs, OP_GETTABUP, 3, 0, (unsigned int)(ks | BITRK));
+
+      /* Call _setmetatable(self, mt): args at R4, R5 */
+      luaK_codeABC(ls->fs, OP_MOVE, 4, 0, 0);  /* R4 = self (R0) */
+      luaK_codeABC(ls->fs, OP_MOVE, 5, 2, 0);  /* R5 = mt (R2) */
+      luaK_codeABC(ls->fs, OP_CALL, 3, 3, 1);  /* _setmetatable(R4, R5), 0 results */
+
+      /* Only R0 (self) is alive after the call */
+      ls->fs->freereg = 1;
+    }
+
+    luaK_ret(ls->fs, 0, 0);
+    leaveblock(ls->fs);
+
+    /* Finalize proto */
+    ctor_fs.f->sizecode = ctor_fs.pc;
+    ctor_fs.f->sizek = ctor_fs.nk;
+    ctor_fs.f->sizep = ctor_fs.np;
+    ctor_fs.f->sizelocvars = ctor_fs.nlocvars;
+    ctor_fs.f->sizeupvalues = ctor_fs.nups;
+    ctor_fs.f->linedefined = 0;
+    ctor_fs.f->lastlinedefined = 0;
+    ctor_fs.f->maxstacksize = ctor_fs.freereg > 6 ? ctor_fs.freereg : 6;
+
+    /* Register proto in parent */
+    int proto_idx = saved_fs->np;
+    luaM_growvector(ls->L, saved_fs->f->p, proto_idx, saved_fs->f->sizep,
+                    Proto *, MAXARG_Bx, "functions");
+    saved_fs->f->p[proto_idx] = proto;
+    saved_fs->np++;
+
+    ls->fs = saved_fs;
+
+    /* OP_CLOSURE */
+    int ctor_reg_val = ls->fs->freereg;
+    luaK_codeABx(ls->fs, OP_CLOSURE, ctor_reg_val, (unsigned int)proto_idx);
+    ls->fs->freereg = ctor_reg_val + 1;
+
+    /* Store as class_table[ClassName] and class_table["new"] */
+    int ck = luaK_stringK(ls->fs, class_name);
+    luaK_codeABC(ls->fs, OP_SETTABLE, class_reg, ck | BITRK, ctor_reg_val);
+
+    int nk = luaK_stringK(ls->fs, luaS_newliteral(ls->L, "new"));
+    luaK_codeABC(ls->fs, OP_SETTABLE, class_reg, nk | BITRK, ctor_reg_val);
+
+    ls->fs->freereg = ctor_reg_val; /* release closure register */
+  }
 
   /* return the class table */
   luaK_ret(fs, class_reg, 1);
@@ -809,8 +1774,7 @@ static void javamain(JLexState *ls, FuncState *fs) {
 
   fs->f->is_vararg = 0;
 
-  /* Create _ENV upvalue (mirrors Lua's mainfunc).
-   * OP_GETTABUP needs this to access the global table. */
+  /* Create _ENV upvalue */
   {
     Proto *f = fs->f;
     int oldsize = f->sizeupvalues;
@@ -828,15 +1792,41 @@ static void javamain(JLexState *ls, FuncState *fs) {
 
   next(ls); /* read first token */
 
+  /* skip package declaration */
+  if (ls->t.token == TK_JAVA_PACKAGE) {
+    next(ls);
+    while (ls->t.token == TK_JAVA_NAME || ls->t.token == '.') next(ls);
+    if (ls->t.token == ';') next(ls);
+  }
+
+  /* skip import statements */
+  while (ls->t.token == TK_JAVA_IMPORT) {
+    next(ls);
+    if (ls->t.token == TK_JAVA_STATIC) next(ls);
+    while (ls->t.token == TK_JAVA_NAME || ls->t.token == '.') next(ls);
+    if (ls->t.token == '*') next(ls);
+    if (ls->t.token == ';') next(ls);
+  }
+
   /* parse compilation unit: class definitions */
   while (ls->t.token != TK_JAVA_EOS) {
     if (ls->t.token == TK_JAVA_CLASS) {
       class_definition(ls, fs);
     } else if (ls->t.token == TK_JAVA_PUBLIC) {
-      /* public class ... */
       next(ls);
       if (ls->t.token == TK_JAVA_CLASS) {
         class_definition(ls, fs);
+      } else if (ls->t.token == TK_JAVA_INTERFACE || ls->t.token == TK_JAVA_ENUM) {
+        /* skip public interface/enum for now */
+        int brace_depth = 0;
+        while (ls->t.token != TK_JAVA_EOS) {
+          if (ls->t.token == '{') brace_depth++;
+          else if (ls->t.token == '}') {
+            if (brace_depth == 0) { next(ls); break; }
+            brace_depth--;
+          }
+          next(ls);
+        }
       } else {
         jlex_syntaxerror(ls, "expected 'class' after 'public'");
       }

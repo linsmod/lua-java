@@ -369,6 +369,10 @@ int luaO_utf8esc (char *buff, unsigned long x) {
 ** Convert a number object to a string
 */
 void luaO_tostring (lua_State *L, StkId obj) {
+  if (ttisboolean(obj)) {
+    setsvalue2s(L, obj, luaS_new(L, obj->value_.b ? "true" : "false"));
+    return;
+  }
   char buff[MAXNUMBER2STR];
   size_t len;
   lua_assert(ttisnumber(obj));

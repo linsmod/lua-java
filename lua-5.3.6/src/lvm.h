@@ -14,7 +14,7 @@
 
 
 #if !defined(LUA_NOCVTN2S)
-#define cvt2str(o)	ttisnumber(o)
+#define cvt2str(o)	(ttisnumber(o) || ttisboolean(o))
 #else
 #define cvt2str(o)	0	/* no conversion from numbers to strings */
 #endif
