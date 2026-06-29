@@ -6,8 +6,10 @@
 # Your platform. See PLATS for possible values.
 PLAT= none
 
-CC= gcc -std=gnu99
-CFLAGS= -O2 -Wall -Wextra -DLUA_COMPAT_5_2 $(SYSCFLAGS) $(MYCFLAGS)
+CC= $(CCACHE)gcc -std=gnu99
+CXX= $(CCACHE)g++
+CFLAGS= -Wall -Wextra -DLUA_COMPAT_5_2 $(SYSCFLAGS) $(MYCFLAGS)
+CXXFLAGS= -Wall -Wextra -DLUA_COMPAT_5_2 $(SYSCFLAGS) $(MYCXXFLAGS)
 LDFLAGS= $(SYSLDFLAGS) $(MYLDFLAGS)
 LIBS= -lm $(SYSLIBS) $(MYLIBS)
 
@@ -19,16 +21,21 @@ SYSCFLAGS=
 SYSLDFLAGS=
 SYSLIBS=
 
-MYCFLAGS=
-MYLDFLAGS=
-MYLIBS=
+MYCFLAGS=$(shell dpkg-buildflags --get CFLAGS) $(shell dpkg-buildflags --get CPPFLAGS)
+MYCXXFLAGS=$(shell dpkg-buildflags --get CXXFLAGS) $(shell dpkg-buildflags --get CPPFLAGS)
+MYLDFLAGS=$(shell dpkg-buildflags --get LDFLAGS)
+MYLIBS=-ldl
 MYOBJS=
+
+%.o : %.c
+	$(LIBTOOL) --mode=compile --tag=CC $(CC) $(CFLAGS) -c $< -o $@
+	$(LIBTOOL) --mode=compile --tag=CXX $(CXX) $(CFLAGS) -c $< -o $*-c++.o
 
 # == END OF USER SETTINGS -- NO NEED TO CHANGE ANYTHING BELOW THIS LINE =======
 
 PLATS= aix bsd c89 freebsd generic linux macosx mingw posix solaris
 
-LUA_A=	liblua.a
+LUA_A=	liblua$(V).la liblua$(V)-c++.la
 CORE_O=	lapi.o lcode.o lctype.o ldebug.o ldo.o ldump.o lfunc.o lgc.o llex.o \
 	lmem.o lobject.o lopcodes.o lparser.o lstate.o lstring.o ltable.o \
 	ltm.o lundump.o lvm.o lzio.o
@@ -36,10 +43,10 @@ LIB_O=	lauxlib.o lbaselib.o lbitlib.o lcorolib.o ldblib.o liolib.o \
 	lmathlib.o loslib.o lstrlib.o ltablib.o lutf8lib.o loadlib.o linit.o
 BASE_O= $(CORE_O) $(LIB_O) $(MYOBJS)
 
-LUA_T=	lua
+LUA_T=	lua$(V)
 LUA_O=	lua.o
 
-LUAC_T=	luac
+LUAC_T=	luac$(V)
 LUAC_O=	luac.o
 
 ALL_O= $(BASE_O) $(LUA_O) $(LUAC_O)
@@ -56,14 +63,14 @@ o:	$(ALL_O)
 a:	$(ALL_A)
 
 $(LUA_A): $(BASE_O)
-	$(AR) $@ $(BASE_O)
-	$(RANLIB) $@
+	$(LIBTOOL) --mode=link --tag=CC  $(CC)  $(LDFLAGS) -lm -ldl $(BASE_O:.o=.lo)     -rpath /usr/lib/$(DEB_HOST_MULTIARCH) -version-info 0:0:0 -Wl,--version-script,../debian/version-script -o liblua$(V).la
+	$(LIBTOOL) --mode=link --tag=CXX $(CXX) $(LDFLAGS) -lm -ldl $(BASE_O:.o=-c++.lo) -rpath /usr/lib/$(DEB_HOST_MULTIARCH) -version-info 0:0:0 -Wl,--version-script,../debian/version-script -o liblua$(V)-c++.la
 
 $(LUA_T): $(LUA_O) $(LUA_A)
-	$(CC) -o $@ $(LDFLAGS) $(LUA_O) $(LUA_A) $(LIBS)
+	$(LIBTOOL) --mode=link --tag=CC $(CC) $(LDFLAGS) $(LIBS) -Wl,--version-script,../debian/version-script -static liblua$(V).la -Wl,-E lua.lo -o $@
 
 $(LUAC_T): $(LUAC_O) $(LUA_A)
-	$(CC) -o $@ $(LDFLAGS) $(LUAC_O) $(LUA_A) $(LIBS)
+	$(LIBTOOL) --mode=link --tag=CC $(CC) $(LDFLAGS) -Wl,--version-script,../debian/version-script -static liblua$(V).la luac.lo -o $@
 
 clean:
 	$(RM) $(ALL_T) $(ALL_O)

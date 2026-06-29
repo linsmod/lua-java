@@ -32,6 +32,7 @@
 #include "lundump.h"
 #include "lvm.h"
 #include "lzio.h"
+#include "jparser.h"   /* Java→Lua bytecode compiler */
 
 
 
@@ -767,7 +768,11 @@ static void f_parser (lua_State *L, void *ud) {
   LClosure *cl;
   struct SParser *p = cast(struct SParser *, ud);
   int c = zgetc(p->z);  /* read first character */
-  if (c == LUA_SIGNATURE[0]) {
+  if (p->mode && strchr(p->mode, 'j')) {
+    /* Java mode: use Java→Lua bytecode compiler */
+    cl = javaY_parser(L, p->z, &p->buff, p->name, c);
+  }
+  else if (c == LUA_SIGNATURE[0]) {
     checkmode(L, p->mode, "binary");
     cl = luaU_undump(L, p->z, p->name);
   }

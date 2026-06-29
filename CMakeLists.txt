@@ -7,7 +7,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # ============================================================
 # 从 apt 下载的 Lua 5.3.6 源码编译
 # ============================================================
-set(LUA_SRC_DIR ${CMAKE_SOURCE_DIR}/lua5.3-5.3.6/src)
+set(LUA_SRC_DIR ${CMAKE_SOURCE_DIR}/lua-5.3.6/src)
 
 # Lua core + lib 源文件 (排除 lua.c / luac.c 这两个 standalone)
 set(LUA_SOURCES

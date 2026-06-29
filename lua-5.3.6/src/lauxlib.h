@@ -84,6 +84,7 @@ LUALIB_API int (luaL_loadfilex) (lua_State *L, const char *filename,
                                                const char *mode);
 
 #define luaL_loadfile(L,f)	luaL_loadfilex(L,f,NULL)
+#define luaL_loadjava(L,f)	luaL_loadfilex(L,f,"j")
 
 LUALIB_API int (luaL_loadbufferx) (lua_State *L, const char *buff, size_t sz,
                                    const char *name, const char *mode);
