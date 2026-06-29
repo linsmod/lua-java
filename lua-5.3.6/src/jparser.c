@@ -494,6 +494,15 @@ static void subexpr(JLexState *ls, expdesc *v, int limit) {
       luaK_codeABC(ls->fs, OP_CALL, method_reg, nargs + 1, 2);
       ls->fs->freereg = method_reg;
       init_exp(v, VCALL, ls->fs->pc - 1);
+    } else if (getstr(field)[0] == 'l'
+               && strcmp(getstr(field), "length") == 0) {
+      /* .length on an array/table: emit OP_LEN (# operator).
+       * Varargs and array initializers produce Lua tables, and
+       * Java .length maps to Lua's # length operator. */
+      int len_reg = ls->fs->freereg;
+      ls->fs->freereg = len_reg + 1;
+      luaK_codeABC(ls->fs, OP_LEN, len_reg, obj_reg, 0);
+      init_exp(v, VNONRELOC, len_reg);
     } else {
       /* Field access: use VINDEXED so expression reading emits GETTABLE
        * and assignment (luaK_storevar) emits SETTABLE. */
@@ -606,7 +615,8 @@ static void subexpr(JLexState *ls, expdesc *v, int limit) {
         luaK_exp2nextreg(ls->fs, v);  /* put left into a register */
         op = OPR_CONCAT;
       }
-      luaK_posfix(ls->fs, op, v, &v2, ls->linenumber); }
+      luaK_posfix(ls->fs, op, v, &v2, ls->linenumber);
+    }
   }
 }
 
