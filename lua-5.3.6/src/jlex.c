@@ -50,12 +50,18 @@ static struct {
 
 void jlex_init(lua_State *L) {
     int i;
+    global_State *g = G(L);
     for (i = 0; i < NJAVA_KW; i++) {
         TString *ts = luaS_new(L, jlex_tokens[i]);
         jlex_kw[i].ts = ts;
         jlex_kw[i].token = TK_JAVA_CLASS + i;
-        /* fix strings that Lua hasn't already fixed */
-        if (ts->extra == 0) {
+        /* fix strings that Lua hasn't already fixed.
+         * luaC_fix requires 'o' to be at the head of 'allgc'.
+         * If 'ts' is a pre-existing string (e.g. "package" from
+         * luaL_openlibs), it won't be at head — skip fixing it.
+         * (Pre-existing strings have live references in Lua tables,
+         * so they won't be collected during normal operation.) */
+        if (ts->extra == 0 && g->allgc == obj2gco(ts)) {
             luaC_fix(L, obj2gco(ts));
         }
     }
