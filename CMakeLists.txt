@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.10)
-project(lua_test C)
+project(lua_test C CXX)
 
 set(CMAKE_C_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # ============================================================
@@ -44,6 +45,50 @@ target_compile_options(lua_source PRIVATE
 # ============================================================
 add_executable(lua_test src/main.c)
 target_link_libraries(lua_test PRIVATE lua_source m dl)
+
+# ============================================================
+# ImGui
+# ============================================================
+set(IMGUI_DIR ${CMAKE_SOURCE_DIR}/third_party/imgui)
+set(IMGUI_SOURCES
+    ${IMGUI_DIR}/imgui.cpp
+    ${IMGUI_DIR}/imgui_draw.cpp
+    ${IMGUI_DIR}/imgui_tables.cpp
+    ${IMGUI_DIR}/imgui_widgets.cpp
+    ${IMGUI_DIR}/imgui_demo.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
+)
+add_library(imgui STATIC ${IMGUI_SOURCES})
+target_include_directories(imgui PUBLIC ${IMGUI_DIR} ${IMGUI_DIR}/backends)
+
+# ---- 查找 GLFW3 + OpenGL ---- */
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(GLFW3 REQUIRED glfw3)
+pkg_check_modules(GL    REQUIRED gl)
+
+# ============================================================
+# Lua Debugger (C++ with ImGui)
+# ============================================================
+add_executable(lua_dbg src/dbg_main.cpp)
+target_include_directories(lua_dbg PRIVATE
+    ${LUA_SRC_DIR}
+    ${IMGUI_DIR}
+    ${IMGUI_DIR}/backends
+    ${GLFW3_INCLUDE_DIRS}
+    ${GL_INCLUDE_DIRS}
+)
+target_link_libraries(lua_dbg PRIVATE
+    lua_source
+    imgui
+    m dl
+    ${GLFW3_LIBRARIES}
+    ${GL_LIBRARIES}
+)
+target_compile_options(lua_dbg PRIVATE
+    -Wall -Wextra
+    -Wno-unused-parameter
+)
 
 # 测试
 enable_testing()
