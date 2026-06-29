@@ -92,8 +92,10 @@ static void recent_add(const char *path) {
         g_recent_files.pop_back();
 }
 
-/* Breakpoints: filename → set of line numbers */
-static std::map<std::string, std::set<int>> g_breakpoints;
+/* Breakpoints: filename → (line → enabled) */
+static std::map<std::string, std::map<int, bool>> g_breakpoints;
+/* Selection state for breakpoints panel (per-frame, not persisted) */
+static std::map<std::string, std::map<int, bool>> g_bp_select;
 
 /* Currently paused location */
 static std::string g_cur_source;
@@ -236,21 +238,48 @@ static int lua_print_hook(lua_State *L) {
 static bool is_breakpoint(const char *source, int line) {
     auto it = g_breakpoints.find(source);
     if (it == g_breakpoints.end()) return false;
-    return it->second.count(line) > 0;
+    auto jt = it->second.find(line);
+    if (jt == it->second.end()) return false;
+    return jt->second;  /* true = enabled */
 }
 
 static void toggle_breakpoint(const char *source, int line) {
-    auto &s = g_breakpoints[source];
-    if (s.count(line)) {
-        s.erase(line);
+    auto &file_bps = g_breakpoints[source];
+    auto it = file_bps.find(line);
+    if (it != file_bps.end()) {
+        /* Exists: remove it */
+        file_bps.erase(it);
+        if (file_bps.empty())
+            g_breakpoints.erase(source);
         console_add(("Breakpoint removed at " + std::string(source) +
                      ":" + std::to_string(line)).c_str(),
                     ImVec4(1.0f, 0.7f, 0.3f, 1.0f));
     } else {
-        s.insert(line);
+        /* New: add enabled */
+        file_bps[line] = true;
         console_add(("Breakpoint set at " + std::string(source) +
                      ":" + std::to_string(line)).c_str(),
                     ImVec4(1.0f, 0.8f, 0.2f, 1.0f));
+    }
+}
+
+/* Enable/disable a single breakpoint */
+static void bp_set_enabled(const std::string &file, int line, bool on) {
+    auto it = g_breakpoints.find(file);
+    if (it != g_breakpoints.end()) {
+        auto jt = it->second.find(line);
+        if (jt != it->second.end())
+            jt->second = on;
+    }
+}
+
+/* Delete a single breakpoint */
+static void bp_delete(const std::string &file, int line) {
+    auto it = g_breakpoints.find(file);
+    if (it != g_breakpoints.end()) {
+        it->second.erase(line);
+        if (it->second.empty())
+            g_breakpoints.erase(it);
     }
 }
 
@@ -458,10 +487,18 @@ static void load_source_file(const char *filename) {
 }
 
 /* ============================================================
+ *  Forward declarations
+ * ============================================================ */
+static void dbg_stop();
+
+/* ============================================================
  *  Load & run a script in the debuggee coroutine
  * ============================================================ */
 static bool dbg_load_script(const char *filename) {
-    if (!g_co) return false;
+    /* Always stop old execution first — loading a new chunk onto a yielded
+     * coroutine would leave stale CallInfo pointers to freed Proto objects,
+     * causing heap-buffer-overflow on next lua_resume. */
+    dbg_stop();
 
     /* Load the file */
     int status;
@@ -1323,39 +1360,93 @@ static void draw_breakpoints() {
         return;
     }
 
-    /* We need a copy to safely erase while iterating */
-    std::vector<std::pair<std::string, int>> to_remove;
-
-    for (auto &fentry : g_breakpoints) {
-        const std::string &file = fentry.first;
-        auto &lines = fentry.second;
-
-        std::vector<int> sorted_lines(lines.begin(), lines.end());
-        std::sort(sorted_lines.begin(), sorted_lines.end());
-
-        for (int line : sorted_lines) {
-            char label[256];
-            snprintf(label, sizeof(label), "%s:%d", file.c_str(), line);
-            ImGui::TextUnformatted(label);
-            ImGui::SameLine();
-            char btn_label[64];
-            snprintf(btn_label, sizeof(btn_label), "X##%s_%d",
-                     file.c_str(), line);
-            if (ImGui::SmallButton(btn_label)) {
-                to_remove.push_back({file, line});
+    /* ---- Action buttons ---- */
+    if (ImGui::Button("Select All")) {
+        for (auto &fe : g_breakpoints)
+            for (auto &bp : fe.second)
+                g_bp_select[fe.first][bp.first] = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Deselect All")) {
+        g_bp_select.clear();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Enable Sel")) {
+        for (auto &sf : g_bp_select) {
+            for (auto &sl : sf.second) {
+                if (sl.second) bp_set_enabled(sf.first, sl.first, true);
             }
         }
+        g_bp_select.clear();
     }
+    ImGui::SameLine();
+    if (ImGui::Button("Disable Sel")) {
+        for (auto &sf : g_bp_select) {
+            for (auto &sl : sf.second) {
+                if (sl.second) bp_set_enabled(sf.first, sl.first, false);
+            }
+        }
+        g_bp_select.clear();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Delete Sel")) {
+        for (auto &sf : g_bp_select) {
+            for (auto &sl : sf.second) {
+                if (sl.second) bp_delete(sf.first, sl.first);
+            }
+        }
+        g_bp_select.clear();
+    }
+    ImGui::Separator();
 
-    for (auto &r : to_remove) {
-        auto it = g_breakpoints.find(r.first);
-        if (it != g_breakpoints.end()) {
-            it->second.erase(r.second);
-            if (it->second.empty())
-                g_breakpoints.erase(it);
+    /* ---- Breakpoint list ---- */
+    ImGui::BeginChild("BpList", ImVec2(0, 0), false,
+                       ImGuiWindowFlags_AlwaysVerticalScrollbar);
+
+    /* Collect flat sorted list for display */
+    struct BpDisplay {
+        std::string file;
+        int         line;
+        bool        enabled;
+    };
+    std::vector<BpDisplay> bps;
+    for (auto &fe : g_breakpoints) {
+        for (auto &bp : fe.second) {
+            bps.push_back({fe.first, bp.first, bp.second});
         }
     }
+    std::sort(bps.begin(), bps.end(), [](const BpDisplay &a, const BpDisplay &b) {
+        if (a.file != b.file) return a.file < b.file;
+        return a.line < b.line;
+    });
 
+    for (auto &bp : bps) {
+        char id[320];
+        snprintf(id, sizeof(id), "##sel_%s_%d", bp.file.c_str(), bp.line);
+        bool sel = g_bp_select[bp.file][bp.line];
+        if (ImGui::Checkbox(id, &sel))
+            g_bp_select[bp.file][bp.line] = sel;
+
+        ImGui::SameLine();
+
+        bool en = bp.enabled;
+        snprintf(id, sizeof(id), "##en_%s_%d", bp.file.c_str(), bp.line);
+        if (ImGui::Checkbox(id, &en))
+            bp_set_enabled(bp.file, bp.line, en);
+
+        ImGui::SameLine();
+        if (bp.enabled)
+            ImGui::Text("%s:%d", bp.file.c_str(), bp.line);
+        else
+            ImGui::TextDisabled("%s:%d (disabled)", bp.file.c_str(), bp.line);
+
+        ImGui::SameLine();
+        snprintf(id, sizeof(id), "X##%s_%d", bp.file.c_str(), bp.line);
+        if (ImGui::SmallButton(id))
+            bp_delete(bp.file, bp.line);
+    }
+
+    ImGui::EndChild();
     ImGui::End();
 }
 
@@ -1389,8 +1480,9 @@ static void config_save() {
         fprintf(f, "recent %s\n", rf.c_str());
     fprintf(f, "break_on_main %d\n", g_break_on_main ? 1 : 0);
     for (auto &fe : g_breakpoints) {
-        for (int ln : fe.second)
-            fprintf(f, "bp %s %d\n", fe.first.c_str(), ln);
+        for (auto &bp : fe.second)
+            fprintf(f, "bp %s %d %d\n", fe.first.c_str(), bp.first,
+                    bp.second ? 1 : 0);
     }
     fclose(f);
 }
@@ -1423,9 +1515,10 @@ static void config_load() {
             sscanf(line, "%*s %d", &arg2);
             g_break_on_main = (arg2 != 0);
         } else if (strcmp(type, "bp") == 0) {
-            int n = sscanf(line, "%*s %2047s %d", arg1, &arg2);
-            if (n == 2 && arg2 > 0)
-                g_breakpoints[arg1].insert(arg2);
+            int arg3 = 1;
+            int n = sscanf(line, "%*s %2047s %d %d", arg1, &arg2, &arg3);
+            if (n >= 2 && arg2 > 0)
+                g_breakpoints[arg1][arg2] = (arg3 != 0);
         }
     }
     fclose(f);
