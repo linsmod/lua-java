@@ -1648,6 +1648,8 @@ static int method_definition(JLexState *ls, FuncState *fs, int class_reg,
   method_fs.f->linedefined = method_start_line;
   method_fs.f->lastlinedefined = ls->linenumber;
   method_fs.f->maxstacksize = method_fs.freereg;
+  if ((int)method_fs.f->maxstacksize < (int)nparams)
+      method_fs.f->maxstacksize = (lu_byte)nparams;
   method_fs.f->numparams = (lu_byte)nparams;  /* already set above, but ensure consistency */
 
   /* register proto in parent */

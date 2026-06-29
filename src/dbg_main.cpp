@@ -605,6 +605,9 @@ static void snapshot_registers(lua_State *L) {
     int nregs = p->maxstacksize;
     int top_nregs = (int)(L->top - base);
     if (top_nregs > nregs) nregs = top_nregs;
+    /* At minimum, show parameter registers. maxstacksize=0 doesn't
+     * mean there are no parameters — Lua fills param slots from caller. */
+    if (nregs < (int)p->numparams) nregs = (int)p->numparams;
 
     for (int i = 0; i < nregs; i++) {
         TValue *reg = &base[i];
