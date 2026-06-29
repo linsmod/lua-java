@@ -473,8 +473,11 @@ void java_openlib(lua_State *L) {
   lua_setglobal(L, "__WILDCARD_PACKAGES");
   jlib_set_global_cf(L, "_j_import_wildcard", j_import_wildcard);
 
-  /* Math (already from Lua, but re-expose as alias if needed) */
-  /* (Lua's math library is already available) */
+  /* Math: Java code uses 'Math.floor', 'Math.abs', etc. (capital M).
+   * Lua's standard library is lowercase 'math'; alias it as 'Math' so
+   * Java-style static calls resolve correctly. */
+  lua_getglobal(L, "math");
+  lua_setglobal(L, "Math");
 }
 
 /* ================================================================

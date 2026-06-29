@@ -479,13 +479,21 @@ static void subexpr(JLexState *ls, expdesc *v, int limit) {
         expdesc arg;
         expr(ls, &arg);
         exp2reg(ls->fs, &arg, first_arg_reg);
+        /* Advance freereg past the placed argument so that parsing the
+         * NEXT argument (which may allocate temp registers via method
+         * calls, etc.) does not clobber this one. */
+        if (ls->fs->freereg < first_arg_reg + 1)
+          ls->fs->freereg = first_arg_reg + 1;
         nargs++;
         while (ls->t.token == ',') {
           next(ls);
           expr(ls, &arg);
           /* first_arg_reg already skips self, so nargs (which includes self)
            * would double-count. Use method_reg+1+nargs for correct position. */
-          exp2reg(ls->fs, &arg, method_reg + 1 + nargs);
+          int arg_reg = method_reg + 1 + nargs;
+          exp2reg(ls->fs, &arg, arg_reg);
+          if (ls->fs->freereg < arg_reg + 1)
+            ls->fs->freereg = arg_reg + 1;
           nargs++;
         }
       }
@@ -530,11 +538,18 @@ static void subexpr(JLexState *ls, expdesc *v, int limit) {
       expdesc arg;
       expr(ls, &arg);
       exp2reg(ls->fs, &arg, base + 1);
+      /* Advance freereg past the placed argument so nested expressions in
+       * subsequent arguments don't clobber it. */
+      if (ls->fs->freereg < base + 2)
+        ls->fs->freereg = base + 2;
       nargs = 1;
       while (ls->t.token == ',') {
         next(ls);
         expr(ls, &arg);
-        exp2reg(ls->fs, &arg, base + nargs + 1);
+        int arg_reg = base + nargs + 1;
+        exp2reg(ls->fs, &arg, arg_reg);
+        if (ls->fs->freereg < arg_reg + 1)
+          ls->fs->freereg = arg_reg + 1;
         nargs++;
       }
     }
@@ -587,30 +602,51 @@ static void subexpr(JLexState *ls, expdesc *v, int limit) {
     int tok = ls->t.token;
     op = getbinopr(tok);
 
-    /* Java '+' semantics: if either operand is a string, it's concatenation.
-     * Detect left-side string literals at compile time: override OPR_ADD
-     * (from getbinopr) with OPR_CONCAT when left is a string literal.
-     * For right-side strings or variables holding strings, we detect
-     * after parsing the right operand below. */
-    if (tok == '+' && v->k == VK)
-      op = OPR_CONCAT;
-    /* Also: if left is the result of a previous CONCAT, keep as CONCAT */
-    if (tok == '+' && op != OPR_CONCAT && v->k == VRELOCABLE) {
-      Instruction prev = getinstruction(ls->fs, v);
-      if (GET_OPCODE(prev) == OP_CONCAT)
-        op = OPR_CONCAT;
-    }
-
+    /* precedence gate — MUST be checked before any '+' handling so that
+     * recursive subexpr calls stop at same-level operators (left-assoc). */
     if (op == OPR_NOBINOPR || binop_level(tok) <= limit) break;
 
     int thislevel = binop_level(tok);
-    next(ls);
+
+    /* Java '+': if the LEFT operand is a string literal (VK) or the result
+     * of a previous concatenation (VRELOCABLE OP_CONCAT), this '+' is
+     * string concatenation.  Handle it with explicit register placement
+     * instead of luaK_infix/luaK_posfix.
+     *
+     * Why: CONCAT requires its two operands in CONSECUTIVE registers
+     * (R(B)..R(C) with no gaps).  A method-call right operand such as
+     * 'fruits.size()' leaves a dead copy of the receiver in the register
+     * between the left operand and the call result, which would wrongly
+     * be pulled into the CONCAT range.  By placing the left operand in a
+     * register FIRST and then discharging the right operand's result into
+     * exactly left+1 (overwriting any such dead intermediate registers),
+     * we guarantee a clean two-register concat range. */
+    if (tok == '+' && (v->k == VK || (v->k == VRELOCABLE &&
+            GET_OPCODE(getinstruction(ls->fs, v)) == OP_CONCAT))) {
+      next(ls);  /* consume '+' */
+      luaK_exp2nextreg(ls->fs, v);   /* place LEFT in a register */
+      int lreg = v->u.info;
+      expdesc v2;
+      subexpr(ls, &v2, thislevel);   /* respects limit, so no over-absorption */
+      /* Discharge RIGHT's result into lreg+1 — the register immediately
+       * after the left operand.  exp2reg emits a MOVE/LOADK as needed,
+       * collapsing any gap left by a method-call receiver/self copy. */
+      int rreg = lreg + 1;
+      exp2reg(ls->fs, &v2, rreg);
+      luaK_codeABC(ls->fs, OP_CONCAT, lreg, lreg, rreg);
+      ls->fs->freereg = lreg + 1;  /* result in lreg; rreg now dead */
+      init_exp(v, VNONRELOC, lreg);
+      continue;
+    }
+
+    next(ls);  /* consume operator */
     luaK_infix(ls->fs, op, v);
     { expdesc v2;
       subexpr(ls, &v2, thislevel);
       /* Right-side string literal: switch from OPR_ADD to OPR_CONCAT.
-       * Must put left operand into a register (OPR_CONCAT needs
-       * consecutive registers; OPR_ADD may have kept left as numeral). */
+       * A string literal allocates no register while parsing, so it is
+       * safe to place the left operand here (after parsing the right).
+       * (Right is a bare string literal, so no method-call gap issue.) */
       if (tok == '+' && op != OPR_CONCAT && v2.k == VK) {
         luaK_exp2nextreg(ls->fs, v);  /* put left into a register */
         op = OPR_CONCAT;
