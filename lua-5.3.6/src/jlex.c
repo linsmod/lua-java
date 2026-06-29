@@ -16,6 +16,7 @@
 #include "lstring.h"
 #include "ltable.h"
 #include "lzio.h"
+#include "llex.h"
 #include "jlex.h"
 
 #define next(ls)          ((ls)->current = zgetc((ls)->z))
@@ -293,6 +294,8 @@ void jlex_setinput(lua_State *L, JLexState *ls, ZIO *z, TString *source, int fir
 
 void jlex_next(JLexState *ls) {
     ls->lastline = ls->linenumber;
+    if (ls->fs && ls->fs->ls)
+        ls->fs->ls->lastline = ls->linenumber;
     if (ls->lookahead.token != TK_JAVA_EOS) {
         ls->t = ls->lookahead; ls->lookahead.token = TK_JAVA_EOS;
     } else ls->t.token = jlex(ls, &ls->t.seminfo);

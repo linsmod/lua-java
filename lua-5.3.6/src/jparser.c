@@ -1432,6 +1432,9 @@ static int method_definition(JLexState *ls, FuncState *fs, int class_reg,
                               TString *class_name) {
   (void)fs;
 
+  /* Capture line where method/ctor definition starts */
+  int method_start_line = ls->linenumber;
+
   /* Check if this is a constructor: name == class name and no return type */
   int is_ctor = 0;
 
@@ -1513,6 +1516,7 @@ static int method_definition(JLexState *ls, FuncState *fs, int class_reg,
   method_fs.prev = ls->fs;
   method_mini_ls.L = ls->L;
   method_mini_ls.h = ls->h;
+  method_mini_ls.lastline = ls->linenumber;
   method_fs.ls = &method_mini_ls;
   method_fs.bl = NULL;
   method_fs.pc = 0;
@@ -1637,8 +1641,8 @@ static int method_definition(JLexState *ls, FuncState *fs, int class_reg,
   method_fs.f->sizep = method_fs.np;
   method_fs.f->sizelocvars = method_fs.nlocvars;
   method_fs.f->sizeupvalues = method_fs.nups;
-  method_fs.f->linedefined = 0;
-  method_fs.f->lastlinedefined = 0;
+  method_fs.f->linedefined = method_start_line;
+  method_fs.f->lastlinedefined = ls->linenumber;
   method_fs.f->maxstacksize = method_fs.freereg;
   method_fs.f->numparams = (lu_byte)nparams;  /* already set above, but ensure consistency */
 
@@ -1820,6 +1824,8 @@ static void class_definition(JLexState *ls, FuncState *fs) {
   /* If no explicit constructor was defined, generate a default one.
    * Default constructor: empty body, just returns (no-op). */
   if (!has_constructor) {
+    int ctor_start_line = ls->linenumber;
+
     /* Create minimal Proto for default constructor */
     Proto *proto = luaF_newproto(ls->L);
     proto->source = ls->source;
@@ -1832,6 +1838,7 @@ static void class_definition(JLexState *ls, FuncState *fs) {
     ctor_fs.prev = fs;
     ctor_mini_ls.L = ls->L;
     ctor_mini_ls.h = ls->h;
+    ctor_mini_ls.lastline = ls->linenumber;
     ctor_fs.ls = &ctor_mini_ls;
     ctor_fs.bl = NULL;
     ctor_fs.pc = 0;
@@ -1910,8 +1917,8 @@ static void class_definition(JLexState *ls, FuncState *fs) {
     ctor_fs.f->sizep = ctor_fs.np;
     ctor_fs.f->sizelocvars = ctor_fs.nlocvars;
     ctor_fs.f->sizeupvalues = ctor_fs.nups;
-    ctor_fs.f->linedefined = 0;
-    ctor_fs.f->lastlinedefined = 0;
+    ctor_fs.f->linedefined = ctor_start_line;
+    ctor_fs.f->lastlinedefined = ls->linenumber;
     ctor_fs.f->maxstacksize = ctor_fs.freereg > 6 ? ctor_fs.freereg : 6;
 
     /* Register proto in parent */
@@ -2154,6 +2161,7 @@ LClosure *javaY_parser(lua_State *L, ZIO *z, Mbuffer *buff,
     struct LexState mini_ls;
     mini_ls.L = L;
     mini_ls.h = lexstate.h;
+    mini_ls.lastline = 1;
     funcstate.ls = &mini_ls;
     javamain(&lexstate, &funcstate);
   }
@@ -2164,8 +2172,8 @@ LClosure *javaY_parser(lua_State *L, ZIO *z, Mbuffer *buff,
   funcstate.f->sizep = funcstate.np;
   funcstate.f->sizelocvars = funcstate.nlocvars;
   funcstate.f->sizeupvalues = funcstate.nups;
-  funcstate.f->linedefined = 0;
-  funcstate.f->lastlinedefined = 0;
+  funcstate.f->linedefined = 1;
+  funcstate.f->lastlinedefined = lexstate.linenumber;
   funcstate.f->maxstacksize = funcstate.freereg > funcstate.f->maxstacksize
                                 ? funcstate.freereg : funcstate.f->maxstacksize;
 
