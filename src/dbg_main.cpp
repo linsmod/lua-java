@@ -595,6 +595,15 @@ static void dbg_stop() {
         /* Keep reference in registry so GC doesn't collect it */
         lua_setfield(g_mainL, LUA_REGISTRYINDEX, "_dbg_co");
     }
+    /* Clear all display caches — stale data from old run must not linger */
+    g_locals_cache.clear();
+    g_upvals_cache.clear();
+    g_callstack_cache.clear();
+    g_bytecode_proto = nullptr;
+    g_bytecode_curpc = -1;
+    g_bytecode_ci    = nullptr;
+    g_cur_source.clear();
+    g_cur_line = -1;
     console_add("--- Execution stopped ---", ImVec4(1.0f, 0.5f, 0.3f, 1.0f));
 }
 
@@ -968,13 +977,21 @@ static void draw_console() {
         ImGui::TextColored(cl.color, "%s", cl.text.c_str());
     }
 
+    /* Right-click context menu: Clear */
+    if (ImGui::BeginPopupContextWindow("ConsoleCtx", ImGuiPopupFlags_MouseButtonRight)) {
+        if (ImGui::MenuItem("Clear")) {
+            g_console.clear();
+        }
+        ImGui::EndPopup();
+    }
+
     if (auto_scroll)
         ImGui::SetScrollHereY(1.0f);
 
     ImGui::EndChild();
 
-    /* Input area */
-    ImGui::PushItemWidth(-1);
+    /* Input area with Clear button */
+    ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x - 70);
     if (ImGui::InputText("##console_input", g_console_input,
                           sizeof(g_console_input),
                           ImGuiInputTextFlags_EnterReturnsTrue)) {
@@ -988,6 +1005,10 @@ static void draw_console() {
         }
     }
     ImGui::PopItemWidth();
+    ImGui::SameLine();
+    if (ImGui::Button("Clear", ImVec2(65, 0))) {
+        g_console.clear();
+    }
 
     /* Set keyboard focus to input when clicked */
     if (ImGui::IsItemHovered() ||
