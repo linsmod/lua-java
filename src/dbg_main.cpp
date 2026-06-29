@@ -810,18 +810,27 @@ static bool dbg_tick() {
         console_add("--- Script finished ---", ImVec4(0.5f, 0.8f, 1.0f, 1.0f));
         lua_sethook(g_co, nullptr, 0, 0);
 
-        /* lua_resume may have left return value on g_mainL stack — discard it */
-        int top_before = lua_gettop(g_mainL);
+        /* lua_resume return values are on g_mainL stack.
+         * For Java scripts: this is java_main()'s result.
+         * For Lua scripts: chunk return values. */
+        int nres = lua_gettop(g_mainL);
 
         /* For Lua scripts: auto-call global main() if present.
-         * For Java scripts: java_main() was already called inside the bytecode
-         * (before RETURN), so no extra work needed here. */
+         * For Java scripts: java_main() was already called inside the
+         * bytecode and its result is in nres above. */
         lua_getglobal(g_mainL, "main");
         if (lua_isfunction(g_mainL, -1)) {
             console_add("Calling main()...",
                         ImVec4(0.5f, 0.8f, 1.0f, 1.0f));
-            if (lua_pcall(g_mainL, 0, 0, 0) == LUA_OK) {
-                /* OK */
+            if (lua_pcall(g_mainL, 0, 1, 0) == LUA_OK) {
+                /* Display main() return value */
+                if (!lua_isnoneornil(g_mainL, -1)) {
+                    const char *r = luaL_tolstring(g_mainL, -1, nullptr);
+                    console_add(r ? r : "(nil return)",
+                                ImVec4(0.7f, 1.0f, 0.7f, 1.0f));
+                    lua_pop(g_mainL, 1);  /* pop tostring copy */
+                }
+                lua_pop(g_mainL, 1);  /* pop main() result */
             } else {
                 const char *err = lua_tostring(g_mainL, -1);
                 console_add(err ? err : "Unknown error",
@@ -833,10 +842,22 @@ static bool dbg_tick() {
             }
         } else {
             lua_pop(g_mainL, 1);  /* pop nil */
+            /* No global main() — display lua_resume return values (Java scripts) */
+            for (int i = 1; i <= nres; i++) {
+                if (!lua_isnoneornil(g_mainL, i)) {
+                    const char *r = luaL_tolstring(g_mainL, i, nullptr);
+                    if (r) {
+                        char buf[128];
+                        snprintf(buf, sizeof(buf), "return: %s", r);
+                        console_add(buf, ImVec4(0.7f, 1.0f, 0.7f, 1.0f));
+                    }
+                    lua_pop(g_mainL, 1);  /* pop tostring copy */
+                }
+            }
         }
 
-        /* Restore stack to pre-call level (discard lua_resume return value) */
-        lua_settop(g_mainL, top_before);
+        /* Clear remaining stack */
+        lua_settop(g_mainL, 0);
         return false;
     }
 
@@ -2014,10 +2035,10 @@ int main(int argc, char *argv[]) {
         "  local argv = argv\n"
         "  for k, v in pairs(_ENV) do\n"
         "    if type(v) == 'table' and type(v.main) == 'function' then\n"
-        "      v.main(argv)\n"
-        "      return\n"
+        "      return v.main(argv) or 0\n"
         "    end\n"
         "  end\n"
+        "  return 0\n"
         "end\n") != LUA_OK) {
         fprintf(stderr, "Failed to load java_main: %s\n",
                 lua_tostring(g_mainL, -1));

@@ -209,13 +209,13 @@ static int run_java_file(lua_State *L, const char *filename) {
         lua_pop(L, 1);
         return 0;
     }
-    /* class table is now on stack */
-    if (!lua_istable(L, -1)) {
-        fprintf(stderr, "Expected class table, got %s\n", luaL_typename(L, -1));
+    /* Return value: int exit code from main() (nil → 0) */
+    {
+        int exit_code = lua_isinteger(L, -1) ? (int)lua_tointeger(L, -1) : 0;
+        if (exit_code != 0)
+            printf("Exit code: %d\n", exit_code);
         lua_pop(L, 1);
-        return 0;
     }
-    printf("Class loaded successfully!\n");
 
     /* Debug: check _ENV entries */
     lua_getglobal(L, "add");
@@ -226,19 +226,6 @@ static int run_java_file(lua_State *L, const char *filename) {
     printf("  _ENV['sum'] type: %s\n", luaL_typename(L, -1));
     lua_pop(L, 1);
 
-    /* List methods in the class table */
-    lua_pushnil(L);
-    printf("Methods: ");
-    int first = 1;
-    while (lua_next(L, -2) != 0) {
-        if (!first) printf(", ");
-        printf("%s", lua_tostring(L, -2));
-        first = 0;
-        lua_pop(L, 1);
-    }
-    printf("\n");
-
-    lua_pop(L, 1); /* pop class table */
     return 1;
 }
 
@@ -286,10 +273,10 @@ int main(int argc, char *argv[]) {
         "  local argv = argv\n"
         "  for k, v in pairs(_ENV) do\n"
         "    if type(v) == 'table' and type(v.main) == 'function' then\n"
-        "      v.main(argc, argv)\n"
-        "      return\n"
+        "      return v.main(argc, argv) or 0\n"
         "    end\n"
         "  end\n"
+        "  return 0\n"
         "end\n") != LUA_OK) {
         fprintf(stderr, "Failed to load java_main: %s\n",
                 lua_tostring(L, -1));
