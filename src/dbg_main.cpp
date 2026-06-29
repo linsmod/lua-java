@@ -1561,6 +1561,17 @@ int main(int argc, char *argv[]) {
         lua_pushnumber(L, a + b);
         return 1;
     });
+    lua_register(g_mainL, "c_uppercase", [](lua_State *L) -> int {
+        const char *s = luaL_checkstring(L, 1);
+        char buf[256];
+        size_t len = strlen(s);
+        if (len >= sizeof(buf)) len = sizeof(buf) - 1;
+        for (size_t i = 0; i < len; i++)
+            buf[i] = (s[i] >= 'a' && s[i] <= 'z') ? s[i] - 32 : s[i];
+        buf[len] = '\0';
+        lua_pushstring(L, buf);
+        return 1;
+    });
 
     /* ---- 2. Create debuggee coroutine ---- */
     g_co = lua_newthread(g_mainL);
@@ -1600,7 +1611,30 @@ int main(int argc, char *argv[]) {
     ImGui::CreateContext();
     ImGuiIO &io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.Fonts->AddFontDefault();
+
+    /* Load CJK-capable font as primary; fall back to default if not found */
+    {
+        const char *cjk_paths[] = {
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        };
+        bool loaded = false;
+        for (const char *path : cjk_paths) {
+            FILE *fp = fopen(path, "rb");
+            if (fp) {
+                fclose(fp);
+                ImFontConfig cfg;
+                cfg.FontNo = 2;  /* SC face in NotoSansCJK TTC, ignored for TTF */
+                io.Fonts->AddFontFromFileTTF(path, 16.0f, &cfg,
+                    io.Fonts->GetGlyphRangesChineseFull());
+                loaded = true;
+                break;
+            }
+        }
+        if (!loaded)
+            io.Fonts->AddFontDefault();
+    }
 
     ImGui::StyleColorsDark();
 
