@@ -46,6 +46,7 @@ extern "C" {
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
+#include "imgui_internal.h"
 #include <GLFW/glfw3.h>
 
 /* ---- Java bridge declarations ---- */
@@ -177,7 +178,11 @@ static bool g_show_callstack  = true;
 static bool g_show_locals     = true;
 static bool g_show_registers  = true;
 static bool g_show_console    = true;
+static bool g_show_controls    = true;
 static bool g_show_breakpoints = true;
+
+/* Pending layout-reset flag (set by menu, handled at dockspace setup) */
+static bool g_pending_layout_reset = false;
 
 /* File > Open modal */
 static bool g_open_file_modal = false;
@@ -1553,6 +1558,83 @@ static void draw_console() {
 /* ============================================================
  *  UI: Main Menu Bar + Compact Toolbar
  * ============================================================ */
+/* ============================================================
+ *  Build the default docking layout (shared by first-run init
+ *  and Reset-to-Default).  Caller must ensure the dockspace
+ *  node does NOT exist yet (or has been removed).
+ * ============================================================ */
+static void build_default_dock_layout(ImGuiID dockspace_id) {
+    ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(dockspace_id, viewport->Size);
+
+    /* Split: main area (left 65%), right sidebar (35%) */
+    ImGuiID dock_main, dock_right;
+    ImGui::DockBuilderSplitNode(
+        dockspace_id, ImGuiDir_Left, 0.65f, &dock_main, &dock_right);
+
+    /* Split right sidebar: top 35%, bottom 65% */
+    ImGuiID dock_right_top, dock_right_bot;
+    ImGui::DockBuilderSplitNode(
+        dock_right, ImGuiDir_Up, 0.35f, &dock_right_top, &dock_right_bot);
+
+    /* Split bottom-right: top 55% (mid), bottom 45% (btm) */
+    ImGuiID dock_right_mid, dock_btm;
+    ImGui::DockBuilderSplitNode(
+        dock_right_bot, ImGuiDir_Up, 0.55f, &dock_right_mid, &dock_btm);
+
+    /* Split main area: top 75% (source), bottom 25% (console) */
+    ImGuiID dock_center, dock_console;
+    ImGui::DockBuilderSplitNode(
+        dock_main, ImGuiDir_Down, 0.25f, &dock_console, &dock_center);
+
+    /* Dock windows into their respective zones */
+    ImGui::DockBuilderDockWindow("Source Code", dock_center);
+    ImGui::DockBuilderDockWindow("Console", dock_console);
+    ImGui::DockBuilderDockWindow("Call Stack", dock_right_top);
+    ImGui::DockBuilderDockWindow("Locals", dock_right_top);
+    ImGui::DockBuilderDockWindow("Registers", dock_right_mid);
+    ImGui::DockBuilderDockWindow("Bytecode", dock_right_mid);
+    ImGui::DockBuilderDockWindow("Breakpoints", dock_btm);
+
+    ImGui::DockBuilderFinish(dockspace_id);
+}
+
+/* ============================================================
+ *  Reset layout to default docking arrangement
+ * ============================================================ */
+static void reset_to_default_layout() {
+    g_pending_layout_reset = true;
+    g_show_source      = true;
+    g_show_callstack   = true;
+    g_show_locals      = true;
+    g_show_registers   = true;
+    g_show_bytecode    = true;
+    g_show_console     = true;
+    g_show_breakpoints = true;
+}
+
+/* ============================================================
+ *  Save / Load layout to/from disk
+ * ============================================================ */
+static std::string config_dir();  /* forward declaration */
+
+static std::string layout_path() {
+    return config_dir() + "/layout.ini";
+}
+
+static void save_layout() {
+    std::string dir = config_dir();
+    mkdir(dir.c_str(), 0755);
+    ImGui::SaveIniSettingsToDisk(layout_path().c_str());
+}
+
+static void load_layout() {
+    struct stat st;
+    if (stat(layout_path().c_str(), &st) != 0) return;  /* file missing */
+    ImGui::LoadIniSettingsFromDisk(layout_path().c_str());
+}
+
 static void draw_main_menu() {
     bool can_step   = (g_dbg_state == DBG_PAUSED);
     bool can_cont   = (g_dbg_state == DBG_PAUSED);
@@ -1673,6 +1755,14 @@ static void draw_main_menu() {
             ImGui::MenuItem("Registers",     nullptr, &g_show_registers);
             ImGui::MenuItem("Console",       nullptr, &g_show_console);
             ImGui::MenuItem("Breakpoints",   nullptr, &g_show_breakpoints);
+            ImGui::Separator();
+            ImGui::MenuItem("Debug Toolbar",  nullptr, &g_show_controls);
+            if (ImGui::MenuItem("Save Layout"))    save_layout();
+            if (ImGui::MenuItem("Load Layout"))    load_layout();
+            ImGui::Separator();
+            if (ImGui::MenuItem("Reset to Default Layout")) {
+                reset_to_default_layout();
+            }
             ImGui::EndMenu();
         }
 
@@ -1762,84 +1852,117 @@ static void draw_main_menu() {
         ImGui::EndPopup();
     }
 
-    /* ---- Compact Toolbar (below menu bar) ---- */
-    ImGui::SetNextWindowPos(ImVec2(0, ImGui::GetFrameHeight()));
-    ImGui::SetNextWindowSize(ImVec2(ImGui::GetIO().DisplaySize.x,
-                                     ImGui::GetFrameHeight() * 2 + 12));
-    ImGui::Begin("##Toolbar", nullptr,
-                 ImGuiWindowFlags_NoTitleBar |
-                 ImGuiWindowFlags_NoResize |
-                 ImGuiWindowFlags_NoMove |
-                 ImGuiWindowFlags_NoScrollbar |
-                 ImGuiWindowFlags_NoSavedSettings);
+}
 
-    /* File path input */
-    ImGui::PushItemWidth(280);
-    ImGui::InputTextWithHint("##filepath", "script.lua / script.java",
+/* ============================================================
+ *  UI: Debug Toolbar — horizontal strip below menu bar
+ *      Modeled after VS Code / IntelliJ IDEA debug toolbar
+ * ============================================================ */
+static const float TOOLBAR_HEIGHT = 34.0f;
+
+static void draw_controls_toolbar() {
+    ImGuiViewport* viewport = ImGui::GetMainViewport();
+
+    /* Toolbar window: anchored below menu bar, full width, no decorations */
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x, viewport->WorkPos.y));
+    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, TOOLBAR_HEIGHT));
+
+    ImGuiWindowFlags tb_flags =
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus |
+        ImGuiWindowFlags_NoNavFocus;
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6, 4));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.14f, 0.14f, 0.15f, 1.0f));
+
+    ImGui::Begin("##DebugToolbar", nullptr, tb_flags);
+
+    bool can_cont   = (g_dbg_state == DBG_PAUSED);
+    bool can_step   = (g_dbg_state == DBG_PAUSED);
+    bool has_script = (g_dbg_state != DBG_IDLE);
+
+    /* ---- File path input ---- */
+    ImGui::PushItemWidth(200);
+    ImGui::InputTextWithHint("##filepath_tb", "script.lua / .java",
                               g_filepath_buf, sizeof(g_filepath_buf));
     ImGui::PopItemWidth();
     ImGui::SameLine();
 
-    /* Browse button — opens native file dialog, falls back to modal */
     if (ImGui::Button("Browse...")) {
         std::string chosen = native_file_dialog();
         if (!chosen.empty()) {
-            snprintf(g_filepath_buf, sizeof(g_filepath_buf),
-                     "%s", chosen.c_str());
+            snprintf(g_filepath_buf, sizeof(g_filepath_buf), "%s", chosen.c_str());
             dbg_load_script(chosen.c_str());
         } else if (!g_zenity_available) {
-            /* Fallback: show text input modal */
-            if (strlen(g_filepath_buf) == 0)
-                g_filepath_buf[0] = '\0';
             g_open_file_modal = true;
         }
     }
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("Open file via system dialog");
     ImGui::SameLine();
-
     if (ImGui::Button("Load")) {
         if (strlen(g_filepath_buf) > 0) dbg_load_script(g_filepath_buf);
     }
-    ImGui::SameLine();
 
-    /* Execution buttons */
-    ImGui::TextDisabled("|");
+    /* ---- Separator ---- */
     ImGui::SameLine();
+    {
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        ImGui::GetWindowDrawList()->AddLine(
+            ImVec2(p.x + 4, p.y + 1),
+            ImVec2(p.x + 4, p.y + TOOLBAR_HEIGHT - 8),
+            IM_COL32(80, 80, 80, 255), 1.0f);
+        ImGui::SetCursorScreenPos(ImVec2(p.x + 12, p.y));
+    }
+
+    /* ---- Execution buttons ---- */
+    ImVec2 btn_size(28, 24);
 
     if (!can_cont) ImGui::BeginDisabled();
-    if (ImGui::ArrowButton("##continue", ImGuiDir_Right)) dbg_continue();
+    if (ImGui::Button("▶", btn_size)) dbg_continue();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("Continue (F5)");
     if (!can_cont) ImGui::EndDisabled();
     ImGui::SameLine();
 
     if (!can_step) ImGui::BeginDisabled();
-    if (ImGui::Button("v", ImVec2(0, 0))) dbg_step_into();
+    if (ImGui::Button("↓", btn_size)) dbg_step_into();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("Step Into (F11)");
     ImGui::SameLine();
-    if (ImGui::Button(">", ImVec2(0, 0))) dbg_step_over();
+    if (ImGui::Button("→", btn_size)) dbg_step_over();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("Step Over (F10)");
     ImGui::SameLine();
-    if (ImGui::Button("^", ImVec2(0, 0))) dbg_step_out();
+    if (ImGui::Button("↑", btn_size)) dbg_step_out();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("Step Out (Shift+F11)");
     if (!can_step) ImGui::EndDisabled();
+
     ImGui::SameLine();
+    {
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        ImGui::GetWindowDrawList()->AddLine(
+            ImVec2(p.x + 2, p.y + 1),
+            ImVec2(p.x + 2, p.y + TOOLBAR_HEIGHT - 8),
+            IM_COL32(80, 80, 80, 255), 1.0f);
+        ImGui::SetCursorScreenPos(ImVec2(p.x + 8, p.y));
+    }
 
     if (!has_script) ImGui::BeginDisabled();
-    if (ImGui::Button("||", ImVec2(0, 0))) dbg_pause();
+    if (ImGui::Button("⏸", btn_size)) dbg_pause();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("Pause");
     ImGui::SameLine();
-    if (ImGui::Button("[]", ImVec2(0, 0))) dbg_stop();
+    if (ImGui::Button("■", btn_size)) dbg_stop();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("Stop (Ctrl+F2)");
     if (!has_script) ImGui::EndDisabled();
 
     ImGui::End();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(3);
 }
 
 /* ============================================================
@@ -2155,6 +2278,10 @@ int main(int argc, char *argv[]) {
     ImGui::CreateContext();
     ImGuiIO &io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+
+    /* Disable default imgui.ini — use our own layout file instead */
+    io.IniFilename = nullptr;
 
     /* Load CJK-capable font as primary; fall back to default if not found */
     {
@@ -2185,6 +2312,9 @@ int main(int argc, char *argv[]) {
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glsl_version);
 
+    /* Load saved window layout from ~/.luad/layout.ini if present */
+    load_layout();
+
     /* ---- Auto-load a file if provided ---- */
     if (load_file) {
         snprintf(g_filepath_buf, sizeof(g_filepath_buf), "%s", load_file);
@@ -2204,62 +2334,60 @@ int main(int argc, char *argv[]) {
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        /* ---- Draw main menu + toolbar ---- */
+        /* ---- Draw main menu ---- */
         draw_main_menu();
 
-        /* Menu bar ~20px + toolbar ~35px = ~55px offset */
-        const float TOP_Y = 58.0f;
+        /* ---- Draw debug toolbar (below menu bar, above dockspace) ---- */
+        if (g_show_controls)
+            draw_controls_toolbar();
 
-        /* Source code takes the left side */
-        if (g_show_source) {
-            ImGui::SetNextWindowPos(ImVec2(0, TOP_Y), ImGuiCond_FirstUseEver);
-            ImGui::SetNextWindowSize(ImVec2(640, 490), ImGuiCond_FirstUseEver);
-            draw_source_view();
+        /* ---- Create dockspace (fills area below toolbar) ---- */
+        {
+            ImGuiID dockspace_id = ImGui::GetID("MainDockSpace");
+
+            /* Handle pending layout reset (deferred from menu callback) */
+            if (g_pending_layout_reset) {
+                g_pending_layout_reset = false;
+                if (ImGui::DockBuilderGetNode(dockspace_id) != nullptr)
+                    ImGui::DockBuilderRemoveNode(dockspace_id);
+            }
+
+            /* Build default layout on first frame (or after reset above) */
+            if (ImGui::DockBuilderGetNode(dockspace_id) == nullptr)
+                build_default_dock_layout(dockspace_id);
+
+            /* Host the dockspace node — fills area below toolbar */
+            ImGuiViewport* viewport = ImGui::GetMainViewport();
+            ImVec2 dock_pos  = viewport->WorkPos;
+            ImVec2 dock_size = viewport->WorkSize;
+            if (g_show_controls) {
+                dock_pos.y  += TOOLBAR_HEIGHT;
+                dock_size.y -= TOOLBAR_HEIGHT;
+            }
+            ImGui::SetNextWindowPos(dock_pos);
+            ImGui::SetNextWindowSize(dock_size);
+            ImGui::SetNextWindowViewport(viewport->ID);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+            ImGuiWindowFlags dock_flags = ImGuiWindowFlags_NoTitleBar |
+                ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoDocking;
+            ImGui::Begin("MainDockSpaceWindow", nullptr, dock_flags);
+            ImGui::PopStyleVar(2);
+            ImGui::DockSpace(dockspace_id, ImVec2(0, 0),
+                             ImGuiDockNodeFlags_PassthruCentralNode);
+            ImGui::End();
         }
 
-        /* Call stack on the right */
-        if (g_show_callstack) {
-            ImGui::SetNextWindowPos(ImVec2(640, TOP_Y), ImGuiCond_FirstUseEver);
-            ImGui::SetNextWindowSize(ImVec2(300, 200), ImGuiCond_FirstUseEver);
-            draw_call_stack();
-        }
-
-        /* Locals on the right */
-        if (g_show_locals) {
-            ImGui::SetNextWindowPos(ImVec2(640, 260 + TOP_Y - 50),
-                                    ImGuiCond_FirstUseEver);
-            ImGui::SetNextWindowSize(ImVec2(300, 155), ImGuiCond_FirstUseEver);
-            draw_locals();
-        }
-
-        /* Registers below locals */
-        if (g_show_registers) {
-            ImGui::SetNextWindowPos(ImVec2(640, 420 + TOP_Y - 50),
-                                    ImGuiCond_FirstUseEver);
-            ImGui::SetNextWindowSize(ImVec2(300, 135), ImGuiCond_FirstUseEver);
-            draw_registers();
-        }
-
-        /* Bytecode on the right */
-        if (g_show_bytecode) {
-            ImGui::SetNextWindowPos(ImVec2(940, TOP_Y), ImGuiCond_FirstUseEver);
-            ImGui::SetNextWindowSize(ImVec2(340, 490), ImGuiCond_FirstUseEver);
-            draw_bytecode_view();
-        }
-
-        /* Console at the bottom */
-        if (g_show_console) {
-            ImGui::SetNextWindowPos(ImVec2(0, 550), ImGuiCond_FirstUseEver);
-            ImGui::SetNextWindowSize(ImVec2(940, 320), ImGuiCond_FirstUseEver);
-            draw_console();
-        }
-
-        /* Breakpoints panel */
-        if (g_show_breakpoints) {
-            ImGui::SetNextWindowPos(ImVec2(940, 550), ImGuiCond_FirstUseEver);
-            ImGui::SetNextWindowSize(ImVec2(340, 320), ImGuiCond_FirstUseEver);
-            draw_breakpoints();
-        }
+        /* ---- Draw all dockable windows (no hardcoded positions) ---- */
+        if (g_show_source)       draw_source_view();
+        if (g_show_callstack)    draw_call_stack();
+        if (g_show_locals)       draw_locals();
+        if (g_show_registers)    draw_registers();
+        if (g_show_bytecode)     draw_bytecode_view();
+        if (g_show_console)      draw_console();
+        if (g_show_breakpoints)  draw_breakpoints();
 
         /* ---- Render ---- */
         ImGui::Render();
