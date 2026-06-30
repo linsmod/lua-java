@@ -1933,7 +1933,6 @@ static void class_definition(JLexState *ls, FuncState *fs) {
     ls->fs->freereg = ctor_reg_val; /* release closure register */
   }
 
-
 }
 
 /* ---------- ENTRY: main function ---------- */
@@ -2087,6 +2086,7 @@ static void parser_main(JLexState *ls, FuncState *fs) {
   }
 
   leaveblock(fs);
+  luaK_ret(fs, 0, 0);  /* all classes registered, return nothing */
 }
 
 /* ---------- TOP-LEVEL ENTRY POINT ---------- */
