@@ -371,6 +371,9 @@ static void simpleexpr(JLexState *ls, expdesc *v) {
         int ctor_reg = reg + nargs + 1;
         int tmp_base = ctor_reg + nargs + 2;  /* after self + args */
         ls->fs->freereg = tmp_base + 4;       /* need 4 temps for metatable */
+        /* Ensure maxstacksize accounts for metatable temps (tmp_base..tmp_base+4) */
+        if (ls->fs->f->maxstacksize < (lu_byte)(tmp_base + 5))
+          ls->fs->f->maxstacksize = (lu_byte)(tmp_base + 5);
 
         /* Look up class table and constructor */
         int k = luaK_stringK(ls->fs, cname);
@@ -939,6 +942,9 @@ static void for_statement(JLexState *ls) {
     luaK_codeABC(ls->fs, OP_LEN, lim_reg, coll_reg, 0);
 
     ls->fs->freereg = coll_reg + 3;
+    /* Ensure maxstacksize accounts for for-each temps (coll_reg..coll_reg+2) */
+    if (ls->fs->f->maxstacksize < (lu_byte)(coll_reg + 3))
+      ls->fs->f->maxstacksize = (lu_byte)(coll_reg + 3);
 
     int loop_start = ls->fs->pc;
 
@@ -1212,6 +1218,10 @@ static void try_statement(JLexState *ls) {
   /* Just emit a println to show we hit this */
   {
     int reg = ls->fs->freereg;
+    /* We use registers reg..reg+3; ensure maxstacksize accounts for them */
+    if (ls->fs->f->maxstacksize < (lu_byte)(reg + 4))
+      ls->fs->f->maxstacksize = (lu_byte)(reg + 4);
+
     emit_string_const(ls->fs, "  (try/catch skipped)", reg);
     luaK_codeABC(ls->fs, OP_GETTABUP, reg + 1, 0,
       (unsigned int)(luaK_stringK(ls->fs, luaS_new(ls->L, "System")) | BITRK));
@@ -2023,6 +2033,8 @@ static void parser_main(JLexState *ls, FuncState *fs) {
        */
       int reg = fs->freereg;
       fs->freereg = reg + 2;
+      if (fs->f->maxstacksize < (lu_byte)(reg + 2))
+        fs->f->maxstacksize = (lu_byte)(reg + 2);
       TString *ts_fn = luaS_newliteral(ls->L, "_j_import_wildcard");
       int k_fn = luaK_stringK(fs, ts_fn);
       luaK_codeABC(fs, OP_GETTABUP, reg, 0, k_fn | BITRK);
@@ -2050,6 +2062,10 @@ static void parser_main(JLexState *ls, FuncState *fs) {
 
     int reg = fs->freereg;
     fs->freereg = reg + 2;  /* we use reg and reg+1 */
+    /* Ensure maxstacksize accounts for temporary registers used by
+     * require() bytecodes — they are not allocated via luaK_reserveregs */
+    if (fs->f->maxstacksize < (lu_byte)(reg + 2))
+      fs->f->maxstacksize = (lu_byte)(reg + 2);
 
     /* GETTABUP reg, _ENV(0), "require" */
     TString *ts_req = luaS_newliteral(ls->L, "require");
