@@ -1233,6 +1233,18 @@ static void draw_source_view() {
         bool is_cur = paused && (lineno == g_cur_line);
         bool is_bp  = is_breakpoint(g_cur_source.c_str(), lineno);
 
+        /* ---- Draw current-line background FIRST so text renders cleanly on top ---- */
+        if (is_cur) {
+            ImVec2 cp = ImGui::GetCursorScreenPos();
+            /* Estimate height = text height + frame padding; close enough for
+             * a background fill that must be drawn before the Selectable. */
+            float line_h = ImGui::GetTextLineHeightWithSpacing();
+            float avail_w = ImGui::GetContentRegionAvail().x;
+            ImGui::GetWindowDrawList()->AddRectFilled(
+                cp, ImVec2(cp.x + avail_w, cp.y + line_h),
+                IM_COL32(160, 140, 30, 120));
+        }
+
         /* Line number */
         ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
                            "%4d ", lineno);
@@ -1288,7 +1300,7 @@ static void draw_source_view() {
             need_scroll = false;
         }
 
-        /* Red dot for breakpoint (in gutter, vertically centered on line) */
+        /* Red dot for breakpoint (on top, in gutter) */
         if (is_bp) {
             ImVec2 pos_min = ImGui::GetItemRectMin();
             ImVec2 pos_max = ImGui::GetItemRectMax();
@@ -1296,15 +1308,6 @@ static void draw_source_view() {
             ImGui::GetWindowDrawList()->AddCircleFilled(
                 ImVec2(pos_min.x + 5, y_center), 4.0f,
                 IM_COL32(220, 50, 50, 255));
-        }
-
-        /* Highlight current line */
-        if (is_cur) {
-            ImVec2 rect_min = ImGui::GetItemRectMin();
-            ImVec2 rect_max = ImGui::GetItemRectMax();
-            ImGui::GetWindowDrawList()->AddRectFilled(
-                rect_min, rect_max,
-                IM_COL32(160, 140, 30, 120));
         }
         ImGui::PopID();
     }
