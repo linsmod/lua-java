@@ -876,33 +876,49 @@ static bool dbg_tick() {
         /* Coroutine finished normally */
         lua_sethook(g_co, nullptr, 0, 0);
 
-        /* Dump script return values for info, then discard them. */
-        int nres = lua_gettop(g_mainL);
-        for (int i = 0; i < nres; i++) {
-            if (!lua_isnoneornil(g_mainL, 1)) {
-                const char *r = luaL_tolstring(g_mainL, 1, nullptr);
-                if (r) {
-                    char buf[128];
-                    snprintf(buf, sizeof(buf), "return[%d]: %s", i + 1, r);
-                    console_add(buf, ImVec4(0.7f, 1.0f, 0.7f, 1.0f));
-                }
-                lua_pop(g_mainL, 1);
-            } else {
-                lua_pop(g_mainL, 1);
-            }
-        }
-
         if (g_in_main_run) {
-            /* main() candidate just finished */
+            /* main() candidate just finished — extract exit code */
             g_in_main_run = false;
             g_has_exit_code = false;
             g_last_exit_code = 0;
-            char buf[64];
-            snprintf(buf, sizeof(buf), "--- main() finished ---");
-            console_add(buf, ImVec4(0.5f, 0.8f, 1.0f, 1.0f));
+
+            int nres = lua_gettop(g_mainL);
+            if (nres > 0 && !lua_isnoneornil(g_mainL, 1)) {
+                if (lua_isinteger(g_mainL, 1)) {
+                    g_last_exit_code = (int)lua_tointeger(g_mainL, 1);
+                    g_has_exit_code = true;
+                }
+                const char *r = luaL_tolstring(g_mainL, 1, nullptr);
+                if (r) {
+                    char buf[128];
+                    snprintf(buf, sizeof(buf), "return: %s", r);
+                    console_add(buf, ImVec4(0.7f, 1.0f, 0.7f, 1.0f));
+                }
+            }
             lua_settop(g_mainL, 0);
+
+            char buf[64];
+            snprintf(buf, sizeof(buf), "--- Script finished (exit %d) ---",
+                     g_last_exit_code);
+            console_add(buf, ImVec4(0.5f, 0.8f, 1.0f, 1.0f));
             g_dbg_state = DBG_IDLE;
         } else {
+            /* Dump script return values for info, then discard them. */
+            int nres = lua_gettop(g_mainL);
+            for (int i = 0; i < nres; i++) {
+                if (!lua_isnoneornil(g_mainL, 1)) {
+                    const char *r = luaL_tolstring(g_mainL, 1, nullptr);
+                    if (r) {
+                        char buf[128];
+                        snprintf(buf, sizeof(buf), "return[%d]: %s", i + 1, r);
+                        console_add(buf, ImVec4(0.7f, 1.0f, 0.7f, 1.0f));
+                    }
+                    lua_pop(g_mainL, 1);
+                } else {
+                    lua_pop(g_mainL, 1);
+                }
+            }
+
             /* Initial script chunk finished — collect main() candidates */
             clear_main_candidates();
             g_has_exit_code = false;
