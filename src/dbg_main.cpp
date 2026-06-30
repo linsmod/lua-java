@@ -127,6 +127,10 @@ static std::map<std::string, std::map<int, bool>> g_bp_select;
 static std::string g_cur_source;
 static int         g_cur_line = -1;
 
+/* Track last scrolled-to location so we only auto-scroll once per pause */
+static int         g_last_scroll_line   = -1;
+static std::string g_last_scroll_source;
+
 /* Locals/upvalues cache — captured once on pause, never queried from
  * the yielded coroutine on subsequent frames (avoids stack corruption). */
 struct TableChild {
@@ -161,6 +165,7 @@ static int g_selected_frame = 0;  /* which call-stack frame to focus */
 /* Bytecode view cache — captured once on pause (Proto* is safe: GC stopped) */
 static const void *g_bytecode_proto = nullptr;
 static int         g_bytecode_curpc = -1;
+static int         g_last_bc_scroll_pc = -1;  /* avoid scrolling bytecode every frame */
 static const void *g_bytecode_ci    = nullptr;  /* to validate cache validity */
 
 /* Registers cache — captured once on pause */
@@ -794,6 +799,9 @@ static void debug_hook(lua_State *L, lua_Debug *ar) {
 
     /* Yield if paused (inside coroutine) */
     if (g_dbg_state == DBG_PAUSED) {
+        fprintf(stderr, "[LOG] hook pause: src='%s' line=%d  (last_scroll: src='%s' line=%d)\n",
+                g_cur_source.c_str(), g_cur_line,
+                g_last_scroll_source.c_str(), g_last_scroll_line);
         /* Snapshot locals & callstack once before yielding — draw functions
          * read from cache so the yielded coroutine's stack is never touched
          * during rendering (avoids heap-buffer-overflow / use-after-free). */
@@ -880,6 +888,9 @@ static bool dbg_load_script(const char *filename) {
     g_dbg_state = DBG_RUNNING;
     g_cur_source.clear();
     g_cur_line = -1;
+    g_last_scroll_line = -1;
+    g_last_scroll_source.clear();
+    g_last_bc_scroll_pc = -1;
     g_selected_frame = 0;
     g_has_exit_code = false;
     return true;
@@ -1027,6 +1038,9 @@ static void dbg_continue() {
     if (g_dbg_state == DBG_PAUSED) {
         g_dbg_state = DBG_RUNNING;
         g_step_mode = STEP_NONE;
+        g_last_scroll_line = -1;
+        g_last_scroll_source.clear();
+        g_last_bc_scroll_pc = -1;
     }
 }
 
@@ -1162,6 +1176,8 @@ static const char *short_name(const char *path) {
  *  UI: Source Code View
  * ============================================================ */
 static void draw_source_view() {
+    static int src_frame = 0;
+    src_frame++;
     ImGui::Begin("Source Code");
 
     if (g_cur_source.empty()) {
@@ -1183,68 +1199,114 @@ static void draw_source_view() {
 
     bool paused = (g_dbg_state == DBG_PAUSED);
 
-    /* Scroll to current line when paused */
+    const auto &lines = it->second;
+
+    /* Reserve child content area.  Size (0,0) = fill remaining space. */
+    ImGui::BeginChild("SourceLines", ImVec2(0, 0), false, ImGuiWindowFlags_None);
+
+    /* ---- Render all source lines (no ListClipper – it interferes with
+     *      manual scrolling and causes target lines to disappear) ---- */
+
+    /* Detect when we need to auto-scroll to the current line.
+     * We use SetScrollHereY() during rendering of the target line,
+     * which lets ImGui calculate the correct position regardless of
+     * per-item heights (Selectable padding, etc.). */
+    bool need_scroll = false;
     if (paused && g_cur_line > 0) {
-        float line_h = ImGui::GetTextLineHeight();
-        ImGui::SetScrollY((g_cur_line - 5) * line_h);
+        if (g_cur_line != g_last_scroll_line || g_cur_source != g_last_scroll_source) {
+            need_scroll = true;
+            fprintf(stderr, "[LOG] frm=%d SCROLL: cur(%s:%d) != last(%s:%d)\n",
+                    src_frame, g_cur_source.c_str(), g_cur_line,
+                    g_last_scroll_source.c_str(), g_last_scroll_line);
+            g_last_scroll_line   = g_cur_line;
+            g_last_scroll_source = g_cur_source;
+        } else {
+            if (src_frame % 120 == 1)
+                fprintf(stderr, "[LOG] frm=%d SKIP: cur(%s:%d) == last(%s:%d)\n",
+                        src_frame, g_cur_source.c_str(), g_cur_line,
+                        g_last_scroll_source.c_str(), g_last_scroll_line);
+        }
     }
 
-    ImGui::BeginChild("SourceLines", ImVec2(0, 0), false);
+    for (int i = 0; i < (int)lines.size(); i++) {
+        int lineno = i + 1;
+        bool is_cur = paused && (lineno == g_cur_line);
+        bool is_bp  = is_breakpoint(g_cur_source.c_str(), lineno);
 
-    const auto &lines = it->second;
-    ImGuiListClipper clipper;
-    clipper.Begin((int)lines.size());
+        /* Line number */
+        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
+                           "%4d ", lineno);
+        ImGui::SameLine(38);
 
-    while (clipper.Step()) {
-        for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; i++) {
-            int lineno = i + 1;
-            bool is_cur = paused && (lineno == g_cur_line);
-            bool is_bp  = is_breakpoint(g_cur_source.c_str(), lineno);
+        /* Clickable line: label includes line text so full width is clickable */
+        ImGui::PushID(lineno);
 
-            /* Line number */
-            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
-                               "%4d ", lineno);
-            ImGui::SameLine(38);
+        char line_label[320];
+        int n = snprintf(line_label, sizeof(line_label),
+                         "%s", lines[i].c_str());
+        /* Pad short lines to ensure a reasonable click target width */
+        while (n < 20 && n < (int)sizeof(line_label) - 1)
+            line_label[n++] = ' ';
+        line_label[n] = '\0';
 
-            /* Clickable line: label includes line text so full width is clickable */
-            ImGui::PushID(lineno);
-
-            char line_label[320];
-            int n = snprintf(line_label, sizeof(line_label),
-                             "%s", lines[i].c_str());
-            /* Pad short lines to ensure a reasonable click target width */
-            while (n < 20 && n < (int)sizeof(line_label) - 1)
-                line_label[n++] = ' ';
-            line_label[n] = '\0';
-
-            if (ImGui::Selectable(line_label, is_cur,
-                                  ImGuiSelectableFlags_AllowDoubleClick)) {
-                /* Click: set cursor; Double-click: toggle breakpoint */
-                if (ImGui::IsMouseDoubleClicked(0)) {
-                    toggle_breakpoint(g_cur_source.c_str(), lineno);
-                }
+        /* Suppress default Selectable hover background — we draw a border instead */
+        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0,0,0,0));
+        ImGui::PushStyleColor(ImGuiCol_HeaderActive,  ImVec4(0,0,0,0));
+        if (ImGui::Selectable(line_label, false,
+                              ImGuiSelectableFlags_AllowDoubleClick)) {
+            /* Click: set cursor; Double-click: toggle breakpoint */
+            if (ImGui::IsMouseDoubleClicked(0)) {
+                toggle_breakpoint(g_cur_source.c_str(), lineno);
             }
-
-            /* Red dot for breakpoint (in gutter, vertically centered on line) */
-            if (is_bp) {
-                ImVec2 pos_min = ImGui::GetItemRectMin();
-                ImVec2 pos_max = ImGui::GetItemRectMax();
-                float y_center = (pos_min.y + pos_max.y) * 0.5f;
-                ImGui::GetWindowDrawList()->AddCircleFilled(
-                    ImVec2(pos_min.x + 5, y_center), 4.0f,
-                    IM_COL32(220, 50, 50, 255));
-            }
-
-            /* Highlight current line */
-            if (is_cur) {
-                ImVec2 rect_min = ImGui::GetItemRectMin();
-                ImVec2 rect_max = ImGui::GetItemRectMax();
-                ImGui::GetWindowDrawList()->AddRectFilled(
-                    rect_min, rect_max,
-                    IM_COL32(60, 100, 180, 120));
-            }
-            ImGui::PopID();
         }
+        ImGui::PopStyleColor(2);
+
+        /* Light border on hover */
+        if (ImGui::IsItemHovered()) {
+            ImVec2 rmin = ImGui::GetItemRectMin();
+            ImVec2 rmax = ImGui::GetItemRectMax();
+            ImGui::GetWindowDrawList()->AddRect(
+                rmin, rmax, IM_COL32(180, 180, 200, 100), 0.0f, 0, 1.0f);
+        }
+
+        /* Auto-scroll to current line only when it's near the edge.
+         * SetScrollHereY uses the item's actual rendered Y, so we never
+         * miscalculate offsets due to per-item height variations. */
+        if (need_scroll && is_cur) {
+            ImVec2 imin = ImGui::GetItemRectMin();
+            ImVec2 imax = ImGui::GetItemRectMax();
+            float  wy   = ImGui::GetWindowPos().y;
+            float  wh   = ImGui::GetWindowHeight();
+            float  top  = imin.y - wy;
+            float  bot  = imax.y - wy;
+            const float PAD = 30.0f;
+
+            if (top < PAD || bot > wh - PAD) {
+                /* Near or outside viewport — scroll to center-ish */
+                ImGui::SetScrollHereY(0.4f);
+            }
+            need_scroll = false;
+        }
+
+        /* Red dot for breakpoint (in gutter, vertically centered on line) */
+        if (is_bp) {
+            ImVec2 pos_min = ImGui::GetItemRectMin();
+            ImVec2 pos_max = ImGui::GetItemRectMax();
+            float y_center = (pos_min.y + pos_max.y) * 0.5f;
+            ImGui::GetWindowDrawList()->AddCircleFilled(
+                ImVec2(pos_min.x + 5, y_center), 4.0f,
+                IM_COL32(220, 50, 50, 255));
+        }
+
+        /* Highlight current line */
+        if (is_cur) {
+            ImVec2 rect_min = ImGui::GetItemRectMin();
+            ImVec2 rect_max = ImGui::GetItemRectMax();
+            ImGui::GetWindowDrawList()->AddRectFilled(
+                rect_min, rect_max,
+                IM_COL32(160, 140, 30, 120));
+        }
+        ImGui::PopID();
     }
 
     ImGui::EndChild();
@@ -1281,8 +1343,12 @@ static void draw_bytecode_view() {
         ImGui::BeginChild("CodeScroll", ImVec2(0, 0), false);
 
         if (curpc >= 0) {
-            float line_h = ImGui::GetTextLineHeight();
-            ImGui::SetScrollY((curpc - 3) * line_h);
+            if (curpc != g_last_bc_scroll_pc) {
+                g_last_bc_scroll_pc = curpc;
+
+                float line_h = ImGui::GetTextLineHeight();
+                ImGui::SetScrollY(curpc * line_h - ImGui::GetWindowHeight() * 0.4f);
+            }
         }
 
         for (int i = 0; i < p->sizecode; i++) {
@@ -1404,8 +1470,15 @@ static void draw_call_stack() {
             if (!e.source.empty() && e.source != "?") {
                 std::string src = e.source;
                 if (src[0] == '@') src = src.substr(1);
+                fprintf(stderr, "[LOG] callstack click: src='%s' line=%d  (old: src='%s' line=%d  last_scroll: src='%s' line=%d)\n",
+                        src.c_str(), e.line,
+                        g_cur_source.c_str(), g_cur_line,
+                        g_last_scroll_source.c_str(), g_last_scroll_line);
                 g_cur_source = src;
                 g_cur_line   = e.line;
+                /* Force re-scroll even if clicking the same location */
+                g_last_scroll_line   = -1;
+                g_last_scroll_source.clear();
                 load_source_file(src.c_str());
             }
         }
