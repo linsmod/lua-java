@@ -14,10 +14,6 @@
 /* ---- Lua→Java bridge declarations ---- */
 LUAI_FUNC void jlex_init    (lua_State *L);
 LUAI_FUNC void java_openlib (lua_State *L);
-
-/* ---- java_main: Lua function (not C!) so debug hook can yield safely ---- */
-/* Loaded at init via luaL_dostring (see main()) */
-
 /* ============================================================
  * 1. Expose C functions to Lua
  * ============================================================ */
@@ -266,28 +262,12 @@ int main(int argc, char *argv[]) {
     luaL_openlibs(L);
     jlex_init(L);     /* register Java reserved words */
     java_openlib(L);  /* register System.out, primitive types */
-    /* java_main as Lua function (not C!) so debug hook can yield inside main() */
-    if (luaL_dostring(L,
-        "java_main = function()\n"
-        "  local argc = argc or 0\n"
-        "  local argv = argv\n"
-        "  for k, v in pairs(_ENV) do\n"
-        "    if type(v) == 'table' and type(v.main) == 'function' then\n"
-        "      return v.main(argc, argv) or 0\n"
-        "    end\n"
-        "  end\n"
-        "  return 0\n"
-        "end\n") != LUA_OK) {
-        fprintf(stderr, "Failed to load java_main: %s\n",
-                lua_tostring(L, -1));
-        lua_pop(L, 1);
-    }
     lua_gc(L, LUA_GCSTOP, 0);  /* DEBUG: stop GC to check for GC corruption */
 
     printf("=== Lua + Java Test ===\n");
     printf("Lua version: %s\n\n", LUA_RELEASE);
 
-    /* Set argc/argv globals for java_main to read at runtime */
+    /* Set argc/argv globals for runtime access */
     lua_pushinteger(L, argc);
     lua_setglobal(L, "argc");
     lua_pushlightuserdata(L, argv);

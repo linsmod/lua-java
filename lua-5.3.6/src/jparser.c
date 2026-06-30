@@ -1933,27 +1933,12 @@ static void class_definition(JLexState *ls, FuncState *fs) {
     ls->fs->freereg = ctor_reg_val; /* release closure register */
   }
 
-  /* Call java_main() if registered (auto-invoke main with runtime argc/argv).
-   * If java_main exists, return its result; otherwise return the class table. */
-  {
-    int jm_reg = fs->freereg;
-    int jm_k = luaK_stringK(fs, luaS_newliteral(ls->L, "java_main"));
-    luaK_codeABC(fs, OP_GETTABUP, jm_reg, 0, jm_k | BITRK);
-    fs->freereg = jm_reg + 1;
-    luaK_codeABC(fs, OP_TEST, jm_reg, 0, 0);   /* skip 2 instrs if nil → return 0 */
-    int jmp_ret_zero = luaK_jump(fs);            /* JMP → RET 0 (nil path) */
-    luaK_codeABC(fs, OP_CALL, jm_reg, 1, 1);    /* jm_reg = java_main() (truthy path) */
-    luaK_ret(fs, jm_reg, 1);                     /* return java_main() result */
-    luaK_patchtohere(fs, jmp_ret_zero);
-    { int k0 = luaK_intK(fs, 0);
-      luaK_codeABx(fs, OP_LOADK, jm_reg, (unsigned int)k0);
-      luaK_ret(fs, jm_reg, 1); }                 /* return 0 (no main) */
-  }
+
 }
 
 /* ---------- ENTRY: main function ---------- */
 
-static void javamain(JLexState *ls, FuncState *fs) {
+static void parser_main(JLexState *ls, FuncState *fs) {
   JBlockCnt bl;
   enterblock(fs, &bl, 0);
 
@@ -2165,7 +2150,7 @@ LClosure *javaY_parser(lua_State *L, ZIO *z, Mbuffer *buff,
     mini_ls.h = lexstate.h;
     mini_ls.lastline = 1;
     funcstate.ls = &mini_ls;
-    javamain(&lexstate, &funcstate);
+    parser_main(&lexstate, &funcstate);
   }
 
   /* 7. finalize proto */

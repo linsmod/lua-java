@@ -55,9 +55,6 @@ LUAI_FUNC void jlex_init    (lua_State *L);
 LUAI_FUNC void java_openlib (lua_State *L);
 }
 
-/* ---- java_main: Lua function (not C!) so debug hook can yield safely ---- */
-/* Loaded at init via luaL_dostring (see main()) */
-
 /* ============================================================
  *  Debugger state
  * ============================================================ */
@@ -80,6 +77,10 @@ static int      g_step_target  = 0;       /* stack depth for step-out */
 /* "Break on main" – pause on first executable line after load */
 static bool g_break_on_main   = true;
 static bool g_pause_on_entry  = false;    /* set on load, cleared on first pause */
+
+/* Exit code of last script execution */
+static int  g_last_exit_code  = 0;
+static bool g_has_exit_code   = false;
 
 /* Recent file list (most recent first, max 10 entries, no duplicates) */
 static std::deque<std::string> g_recent_files;
@@ -135,6 +136,7 @@ struct StackEntry {
     int         line;
 };
 static std::vector<StackEntry> g_callstack_cache;
+static int g_selected_frame = 0;  /* which call-stack frame to focus */
 
 /* Bytecode view cache — captured once on pause (Proto* is safe: GC stopped) */
 static const void *g_bytecode_proto = nullptr;
@@ -802,6 +804,8 @@ static bool dbg_load_script(const char *filename) {
     g_dbg_state = DBG_RUNNING;
     g_cur_source.clear();
     g_cur_line = -1;
+    g_selected_frame = 0;
+    g_has_exit_code = false;
     return true;
 }
 
@@ -818,30 +822,41 @@ static bool dbg_tick() {
     case LUA_OK: {
         /* Coroutine finished normally */
         g_dbg_state = DBG_IDLE;
-        console_add("--- Script finished ---", ImVec4(0.5f, 0.8f, 1.0f, 1.0f));
         lua_sethook(g_co, nullptr, 0, 0);
 
-        /* lua_resume return values are on g_mainL stack.
-         * For Java scripts: this is java_main()'s result.
-         * For Lua scripts: chunk return values. */
+        /* Dump script return values for info, then discard them. */
         int nres = lua_gettop(g_mainL);
+        for (int i = 1; i <= nres; i++) {
+            if (!lua_isnoneornil(g_mainL, i)) {
+                const char *r = luaL_tolstring(g_mainL, i, nullptr);
+                if (r) {
+                    char buf[128];
+                    snprintf(buf, sizeof(buf), "return[%d]: %s", i, r);
+                    console_add(buf, ImVec4(0.7f, 1.0f, 0.7f, 1.0f));
+                }
+                lua_pop(g_mainL, 1);
+            }
+        }
 
-        /* For Lua scripts: auto-call global main() if present.
-         * For Java scripts: java_main() was already called inside the
-         * bytecode and its result is in nres above. */
+        /* Call global main() for the real exit code. */
+        bool have_ec = false;
+        int  ec      = 0;
         lua_getglobal(g_mainL, "main");
         if (lua_isfunction(g_mainL, -1)) {
             console_add("Calling main()...",
                         ImVec4(0.5f, 0.8f, 1.0f, 1.0f));
             if (lua_pcall(g_mainL, 0, 1, 0) == LUA_OK) {
-                /* Display main() return value */
+                have_ec = true;
                 if (!lua_isnoneornil(g_mainL, -1)) {
+                    if (lua_isinteger(g_mainL, -1))
+                        ec = (int)lua_tointeger(g_mainL, -1);
+                    /* else: non-integer return → exit 0 */
                     const char *r = luaL_tolstring(g_mainL, -1, nullptr);
                     console_add(r ? r : "(nil return)",
                                 ImVec4(0.7f, 1.0f, 0.7f, 1.0f));
-                    lua_pop(g_mainL, 1);  /* pop tostring copy */
+                    lua_pop(g_mainL, 1);
                 }
-                lua_pop(g_mainL, 1);  /* pop main() result */
+                lua_pop(g_mainL, 1);
             } else {
                 const char *err = lua_tostring(g_mainL, -1);
                 console_add(err ? err : "Unknown error",
@@ -852,22 +867,20 @@ static bool dbg_tick() {
                 lua_pop(g_mainL, 2);
             }
         } else {
-            lua_pop(g_mainL, 1);  /* pop nil */
-            /* No global main() — display lua_resume return values (Java scripts) */
-            for (int i = 1; i <= nres; i++) {
-                if (!lua_isnoneornil(g_mainL, i)) {
-                    const char *r = luaL_tolstring(g_mainL, i, nullptr);
-                    if (r) {
-                        char buf[128];
-                        snprintf(buf, sizeof(buf), "return: %s", r);
-                        console_add(buf, ImVec4(0.7f, 1.0f, 0.7f, 1.0f));
-                    }
-                    lua_pop(g_mainL, 1);  /* pop tostring copy */
-                }
-            }
+            lua_pop(g_mainL, 1);
         }
 
-        /* Clear remaining stack */
+        g_has_exit_code = have_ec;
+        g_last_exit_code = ec;
+        {
+            char buf[80];
+            if (have_ec)
+                snprintf(buf, sizeof(buf), "--- Script finished (exit %d) ---", ec);
+            else
+                snprintf(buf, sizeof(buf), "--- Script finished ---");
+            console_add(buf, ImVec4(0.5f, 0.8f, 1.0f, 1.0f));
+        }
+
         lua_settop(g_mainL, 0);
         return false;
     }
@@ -967,6 +980,7 @@ static void dbg_stop() {
     g_registers_cache.clear();
     g_cur_source.clear();
     g_cur_line = -1;
+    g_selected_frame = 0;
     console_add("--- Execution stopped ---", ImVec4(1.0f, 0.5f, 0.3f, 1.0f));
 }
 
@@ -1082,12 +1096,18 @@ static void draw_source_view() {
                                "%4d ", lineno);
             ImGui::SameLine(38);
 
-            /* Clickable line text */
-            char label[64];
-            snprintf(label, sizeof(label), "##line%d", lineno);
+            /* Clickable line: label includes line text so full width is clickable */
             ImGui::PushID(lineno);
 
-            if (ImGui::Selectable(label, is_cur,
+            char line_label[320];
+            int n = snprintf(line_label, sizeof(line_label),
+                             "%s", lines[i].c_str());
+            /* Pad short lines to ensure a reasonable click target width */
+            while (n < 20 && n < (int)sizeof(line_label) - 1)
+                line_label[n++] = ' ';
+            line_label[n] = '\0';
+
+            if (ImGui::Selectable(line_label, is_cur,
                                   ImGuiSelectableFlags_AllowDoubleClick)) {
                 /* Click: set cursor; Double-click: toggle breakpoint */
                 if (ImGui::IsMouseDoubleClicked(0)) {
@@ -1095,27 +1115,24 @@ static void draw_source_view() {
                 }
             }
 
-            ImGui::SameLine(38);
-            /* Red dot for breakpoint */
+            /* Red dot for breakpoint (in gutter, vertically centered on line) */
             if (is_bp) {
-                ImVec2 pos = ImGui::GetCursorScreenPos();
-                float y_center = pos.y + ImGui::GetTextLineHeight() * 0.5f;
+                ImVec2 pos_min = ImGui::GetItemRectMin();
+                ImVec2 pos_max = ImGui::GetItemRectMax();
+                float y_center = (pos_min.y + pos_max.y) * 0.5f;
                 ImGui::GetWindowDrawList()->AddCircleFilled(
-                    ImVec2(pos.x - 20, y_center), 4.0f,
+                    ImVec2(pos_min.x + 5, y_center), 4.0f,
                     IM_COL32(220, 50, 50, 255));
             }
 
             /* Highlight current line */
             if (is_cur) {
-                ImVec2 pos = ImGui::GetCursorScreenPos();
+                ImVec2 rect_min = ImGui::GetItemRectMin();
+                ImVec2 rect_max = ImGui::GetItemRectMax();
                 ImGui::GetWindowDrawList()->AddRectFilled(
-                    pos,
-                    ImVec2(pos.x + ImGui::GetContentRegionAvail().x,
-                           pos.y + ImGui::GetTextLineHeight()),
+                    rect_min, rect_max,
                     IM_COL32(60, 100, 180, 120));
             }
-
-            ImGui::TextUnformatted(lines[i].c_str());
             ImGui::PopID();
         }
     }
@@ -1258,13 +1275,35 @@ static void draw_call_stack() {
         return;
     }
 
-    int level = 0;
-    for (auto &e : g_callstack_cache) {
-        ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f),
-                           "[%d] ", level);
-        ImGui::SameLine();
-        ImGui::Text("%s  (%s:%d)", e.name.c_str(), e.source.c_str(), e.line);
-        level++;
+    /* Clamp selected frame to valid range */
+    if (g_selected_frame >= (int)g_callstack_cache.size())
+        g_selected_frame = 0;
+
+    for (int level = 0; level < (int)g_callstack_cache.size(); level++) {
+        auto &e = g_callstack_cache[level];
+        int abs_level = (int)g_callstack_cache.size() - 1 - level;  /* topmost first */
+
+        char label[256];
+        snprintf(label, sizeof(label), "%s (%s:%d)##cs%d",
+                 e.name.c_str(), short_name(e.source.c_str()),
+                 e.line, level);
+
+        bool is_sel = (abs_level == g_selected_frame);
+        if (ImGui::Selectable(label, is_sel)) {
+            g_selected_frame = abs_level;
+            /* Navigate source to selected frame */
+            if (!e.source.empty() && e.source != "?") {
+                std::string src = e.source;
+                if (src[0] == '@') src = src.substr(1);
+                g_cur_source = src;
+                g_cur_line   = e.line;
+                load_source_file(src.c_str());
+            }
+        }
+
+        /* Frame number badge */
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 30);
+        ImGui::TextDisabled("[%d]", abs_level);
     }
 
     ImGui::End();
@@ -1305,11 +1344,11 @@ static void render_local_entry(LocalEntry &e) {
 static void render_locals_child(TableChild &ch, int depth) {
     ImGui::TableNextRow();
 
-    /* indentation in Name column */
+    /* indentation in Name column — add one level on top of current indent */
     ImGui::TableSetColumnIndex(0);
-    ImGui::Indent((float)(depth * 15));
+    ImGui::Indent(15.0f);
     ImGui::TextColored(ImVec4(0.6f, 0.9f, 0.6f, 1.0f), "%s", ch.key.c_str());
-    ImGui::Unindent((float)(depth * 15));
+    ImGui::Unindent(15.0f);
 
     ImGui::TableSetColumnIndex(1);
     if (ch.table_ptr) {
@@ -1383,9 +1422,7 @@ static void render_reg_entry(RegisterEntry &e, int depth) {
 
     /* Reg column */
     ImGui::TableSetColumnIndex(0);
-    ImGui::Indent((float)(depth * 12));
     ImGui::TextColored(color, "%s", regname);
-    ImGui::Unindent((float)(depth * 12));
 
     /* Type column */
     ImGui::TableSetColumnIndex(1);
@@ -1424,11 +1461,11 @@ static void render_regs_child(TableChild &ch, int depth) {
     ImGui::TableNextRow();
     ImVec4 child_color = ImVec4(0.6f, 0.9f, 0.6f, 1.0f);
 
-    /* Key (indented, in Reg column) */
+    /* Key (indented, in Reg column) — add one level on top of current indent */
     ImGui::TableSetColumnIndex(0);
-    ImGui::Indent((float)(depth * 12));
+    ImGui::Indent(12.0f);
     ImGui::TextColored(child_color, "%s", ch.key.c_str());
-    ImGui::Unindent((float)(depth * 12));
+    ImGui::Unindent(12.0f);
 
     /* Type */
     ImGui::TableSetColumnIndex(1);
@@ -1526,7 +1563,9 @@ static void draw_console() {
     ImGui::EndChild();
 
     /* Input area with Clear button */
-    ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x - 70);
+    float clear_btn_w = ImGui::CalcTextSize("Clear").x + ImGui::GetStyle().FramePadding.x * 2;
+    ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x - clear_btn_w - 10);
+    bool reclaim_focus = false;
     if (ImGui::InputText("##console_input", g_console_input,
                           sizeof(g_console_input),
                           ImGuiInputTextFlags_EnterReturnsTrue)) {
@@ -1537,19 +1576,32 @@ static void draw_console() {
             /* Evaluate in debuggee context */
             dbg_eval(g_console_input);
             g_console_input[0] = '\0';
+            reclaim_focus = true;
         }
     }
+    /* Reclaim focus after Enter — keep cursor in input box */
+    if (reclaim_focus)
+        ImGui::SetKeyboardFocusHere(-1);
     ImGui::PopItemWidth();
     ImGui::SameLine();
-    if (ImGui::Button("Clear", ImVec2(65, 0))) {
+    if (ImGui::Button("Clear", ImVec2(clear_btn_w, 0))) {
         g_console.clear();
     }
 
-    /* Set keyboard focus to input when clicked */
-    if (ImGui::IsItemHovered() ||
-        (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
-         !ImGui::IsAnyItemActive() && !ImGui::IsMouseClicked(0))) {
+    /* Click anywhere in console content area → focus input */
+    static bool g_console_input_focused_once = false;
+    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+        !ImGui::IsAnyItemActive() &&
+        ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         ImGui::SetKeyboardFocusHere(-1);
+        g_console_input_focused_once = true;
+    }
+    /* First time the console gets focus at all, focus input */
+    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+        !g_console_input_focused_once &&
+        !ImGui::IsAnyItemActive()) {
+        ImGui::SetKeyboardFocusHere(-1);
+        g_console_input_focused_once = true;
     }
 
     ImGui::End();
@@ -1566,22 +1618,20 @@ static void draw_console() {
 static void build_default_dock_layout(ImGuiID dockspace_id) {
     ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
-    ImGui::DockBuilderSetNodeSize(dockspace_id, viewport->Size);
+    ImGui::DockBuilderSetNodeSize(dockspace_id, viewport->WorkSize);
 
     /* Split: main area (left 65%), right sidebar (35%) */
     ImGuiID dock_main, dock_right;
     ImGui::DockBuilderSplitNode(
         dockspace_id, ImGuiDir_Left, 0.65f, &dock_main, &dock_right);
 
-    /* Split right sidebar: top 35%, bottom 65% */
-    ImGuiID dock_right_top, dock_right_bot;
+    /* Split right sidebar: 3 equal-ish zones */
+    ImGuiID dock_right_mid, dock_right_bot;
     ImGui::DockBuilderSplitNode(
-        dock_right, ImGuiDir_Up, 0.35f, &dock_right_top, &dock_right_bot);
-
-    /* Split bottom-right: top 55% (mid), bottom 45% (btm) */
-    ImGuiID dock_right_mid, dock_btm;
+        dock_right, ImGuiDir_Up, 0.33f, &dock_right_mid, &dock_right_bot);
+    ImGuiID dock_right_top, dock_right_mid2;
     ImGui::DockBuilderSplitNode(
-        dock_right_bot, ImGuiDir_Up, 0.55f, &dock_right_mid, &dock_btm);
+        dock_right_mid, ImGuiDir_Up, 0.50f, &dock_right_top, &dock_right_mid2);
 
     /* Split main area: top 75% (source), bottom 25% (console) */
     ImGuiID dock_center, dock_console;
@@ -1593,9 +1643,9 @@ static void build_default_dock_layout(ImGuiID dockspace_id) {
     ImGui::DockBuilderDockWindow("Console", dock_console);
     ImGui::DockBuilderDockWindow("Call Stack", dock_right_top);
     ImGui::DockBuilderDockWindow("Locals", dock_right_top);
-    ImGui::DockBuilderDockWindow("Registers", dock_right_mid);
-    ImGui::DockBuilderDockWindow("Bytecode", dock_right_mid);
-    ImGui::DockBuilderDockWindow("Breakpoints", dock_btm);
+    ImGui::DockBuilderDockWindow("Registers", dock_right_mid2);
+    ImGui::DockBuilderDockWindow("Bytecode", dock_right_mid2);
+    ImGui::DockBuilderDockWindow("Breakpoints", dock_right_bot);
 
     ImGui::DockBuilderFinish(dockspace_id);
 }
@@ -1774,29 +1824,6 @@ static void draw_main_menu() {
             ImGui::EndMenu();
         }
 
-        /* ---- Keyboard shortcuts (active when not editing text) ---- */
-        if (!ImGui::IsAnyItemActive()) {
-            if (ImGui::IsKeyPressed(ImGuiKey_F5) && can_cont)  dbg_continue();
-            if (ImGui::IsKeyPressed(ImGuiKey_F10) && can_step) dbg_step_over();
-            if (ImGui::IsKeyPressed(ImGuiKey_F11) && can_step) {
-                if (ImGui::IsKeyDown(ImGuiKey_LeftShift) ||
-                    ImGui::IsKeyDown(ImGuiKey_RightShift))
-                    dbg_step_out();
-                else
-                    dbg_step_into();
-            }
-            if (ImGui::IsKeyPressed(ImGuiKey_O) &&
-                ImGui::IsKeyDown(ImGuiKey_LeftCtrl)) {
-                g_open_file_modal = true;
-            }
-            if (ImGui::IsKeyPressed(ImGuiKey_R) &&
-                ImGui::IsKeyDown(ImGuiKey_LeftCtrl) &&
-                strlen(g_filepath_buf) > 0) {
-                dbg_stop();  /* dbg_stop already creates a new thread */
-                dbg_load_script(g_filepath_buf);
-            }
-        }
-
         /* ---- Status indicator on the right side ---- */
         const char *status_text;
         ImVec4 status_color;
@@ -1810,6 +1837,11 @@ static void draw_main_menu() {
 
         float menu_width = ImGui::GetWindowWidth();
         float status_w = ImGui::CalcTextSize(status_text).x + 20;
+        char exit_buf[32] = "";
+        if (g_dbg_state == DBG_IDLE && g_has_exit_code) {
+            snprintf(exit_buf, sizeof(exit_buf), "exit %d", g_last_exit_code);
+            status_w += ImGui::CalcTextSize(exit_buf).x + 10;
+        }
         if (g_dbg_state == DBG_PAUSED && g_cur_line > 0) {
             char buf[256];
             snprintf(buf, sizeof(buf), "%s:%d",
@@ -1818,6 +1850,11 @@ static void draw_main_menu() {
         }
         ImGui::SetCursorPosX(menu_width - status_w - 10);
         ImGui::TextColored(status_color, "[%s]", status_text);
+        if (g_dbg_state == DBG_IDLE && g_has_exit_code) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f),
+                               "%s", exit_buf);
+        }
         if (g_dbg_state == DBG_PAUSED && g_cur_line > 0) {
             ImGui::SameLine();
             ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f),
@@ -1916,7 +1953,7 @@ static void draw_controls_toolbar() {
         ImGui::SetCursorScreenPos(ImVec2(p.x + 12, p.y));
     }
 
-    /* ---- Execution buttons ---- */
+    /* ---- Execution buttons (IDE order: Continue → Over → Into → Out) ---- */
     ImVec2 btn_size(28, 24);
 
     if (!can_cont) ImGui::BeginDisabled();
@@ -1927,13 +1964,13 @@ static void draw_controls_toolbar() {
     ImGui::SameLine();
 
     if (!can_step) ImGui::BeginDisabled();
-    if (ImGui::Button("↓", btn_size)) dbg_step_into();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("Step Into (F11)");
-    ImGui::SameLine();
     if (ImGui::Button("→", btn_size)) dbg_step_over();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("Step Over (F10)");
+    ImGui::SameLine();
+    if (ImGui::Button("↓", btn_size)) dbg_step_into();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Step Into (F11)");
     ImGui::SameLine();
     if (ImGui::Button("↑", btn_size)) dbg_step_out();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
@@ -2039,28 +2076,40 @@ static void draw_breakpoints() {
 
     for (auto &bp : bps) {
         char id[320];
+
+        /* Selection checkbox */
         snprintf(id, sizeof(id), "##sel_%s_%d", bp.file.c_str(), bp.line);
         bool sel = g_bp_select[bp.file][bp.line];
-        if (ImGui::Checkbox(id, &sel))
+        if (ImGui::Checkbox(id, &sel)) {
             g_bp_select[bp.file][bp.line] = sel;
-
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Select for batch ops");
+        }
         ImGui::SameLine();
 
-        bool en = bp.enabled;
+        /* Enabled checkbox */
         snprintf(id, sizeof(id), "##en_%s_%d", bp.file.c_str(), bp.line);
-        if (ImGui::Checkbox(id, &en))
+        bool en = bp.enabled;
+        if (ImGui::Checkbox(id, &en)) {
             bp_set_enabled(bp.file, bp.line, en);
-
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Enable/disable");
+        }
         ImGui::SameLine();
+
+        /* File:line info + delete */
         if (bp.enabled)
-            ImGui::Text("%s:%d", bp.file.c_str(), bp.line);
+            ImGui::Text("%s:%d", short_name(bp.file.c_str()), bp.line);
         else
-            ImGui::TextDisabled("%s:%d (disabled)", bp.file.c_str(), bp.line);
+            ImGui::TextDisabled("%s:%d (disabled)",
+                                short_name(bp.file.c_str()), bp.line);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", bp.file.c_str());
 
-        ImGui::SameLine();
-        snprintf(id, sizeof(id), "X##%s_%d", bp.file.c_str(), bp.line);
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 20);
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.4f, 0.1f, 0.1f, 1.0f));
+        snprintf(id, sizeof(id), "X##del_%s_%d", bp.file.c_str(), bp.line);
         if (ImGui::SmallButton(id))
             bp_delete(bp.file, bp.line);
+        ImGui::PopStyleColor();
     }
 
     ImGui::EndChild();
@@ -2096,6 +2145,7 @@ static void config_save() {
     for (auto &rf : g_recent_files)
         fprintf(f, "recent %s\n", rf.c_str());
     fprintf(f, "break_on_main %d\n", g_break_on_main ? 1 : 0);
+    fprintf(f, "show_toolbar %d\n", g_show_controls ? 1 : 0);
     for (auto &fe : g_breakpoints) {
         for (auto &bp : fe.second)
             fprintf(f, "bp %s %d %d\n", fe.first.c_str(), bp.first,
@@ -2131,6 +2181,9 @@ static void config_load() {
         } else if (strcmp(type, "break_on_main") == 0) {
             sscanf(line, "%*s %d", &arg2);
             g_break_on_main = (arg2 != 0);
+        } else if (strcmp(type, "show_toolbar") == 0) {
+            sscanf(line, "%*s %d", &arg2);
+            g_show_controls = (arg2 != 0);
         } else if (strcmp(type, "bp") == 0) {
             int arg3 = 1;
             int n = sscanf(line, "%*s %2047s %d %d", arg1, &arg2, &arg3);
@@ -2163,21 +2216,6 @@ int main(int argc, char *argv[]) {
     luaL_openlibs(g_mainL);
     jlex_init(g_mainL);
     java_openlib(g_mainL);
-    /* java_main as Lua function (not C!) so debug hook can yield inside main() */
-    if (luaL_dostring(g_mainL,
-        "java_main = function()\n"
-        "  local argv = argv\n"
-        "  for k, v in pairs(_ENV) do\n"
-        "    if type(v) == 'table' and type(v.main) == 'function' then\n"
-        "      return v.main(argv) or 0\n"
-        "    end\n"
-        "  end\n"
-        "  return 0\n"
-        "end\n") != LUA_OK) {
-        fprintf(stderr, "Failed to load java_main: %s\n",
-                lua_tostring(g_mainL, -1));
-        lua_pop(g_mainL, 1);
-    }
     lua_gc(g_mainL, LUA_GCSTOP, 0);  /* stop GC for debugging stability */
 
     /* Build argv as a Lua table with 0-based indexing (Java convention).
@@ -2280,8 +2318,11 @@ int main(int argc, char *argv[]) {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
-    /* Disable default imgui.ini — use our own layout file instead */
+    /* Disable default imgui.ini — use our own layout file instead.
+     * Must also clear any settings that were loaded during CreateContext()
+     * (imgui.ini in cwd may contain stale dock data for old window IDs). */
     io.IniFilename = nullptr;
+    ImGui::LoadIniSettingsFromMemory("", 0);
 
     /* Load CJK-capable font as primary; fall back to default if not found */
     {
@@ -2296,7 +2337,10 @@ int main(int argc, char *argv[]) {
             if (fp) {
                 fclose(fp);
                 ImFontConfig cfg;
-                cfg.FontNo = 2;  /* SC face in NotoSansCJK TTC, ignored for TTF */
+                /* FontNo=2 selects the SC (Simplified Chinese) face inside
+                 * NotoSansCJK TTC; it is harmless but ignored for plain TTF. */
+                bool is_ttc = (strstr(path, ".ttc") || strstr(path, ".TTC"));
+                if (is_ttc) cfg.FontNo = 2;
                 io.Fonts->AddFontFromFileTTF(path, 16.0f, &cfg,
                     io.Fonts->GetGlyphRangesChineseFull());
                 loaded = true;
@@ -2336,6 +2380,37 @@ int main(int argc, char *argv[]) {
 
         /* ---- Draw main menu ---- */
         draw_main_menu();
+
+        /* ---- Global keyboard shortcuts (active when not editing text) ---- */
+        {
+            bool can_step   = (g_dbg_state == DBG_PAUSED);
+            bool can_cont   = (g_dbg_state == DBG_PAUSED);
+            bool has_script = (g_dbg_state != DBG_IDLE);
+
+            if (!ImGui::IsAnyItemActive()) {
+                if (ImGui::IsKeyPressed(ImGuiKey_F5) && can_cont)  dbg_continue();
+                if (ImGui::IsKeyPressed(ImGuiKey_F10) && can_step) dbg_step_over();
+                if (ImGui::IsKeyPressed(ImGuiKey_F11) && can_step) {
+                    if (ImGui::IsKeyDown(ImGuiKey_LeftShift) ||
+                        ImGui::IsKeyDown(ImGuiKey_RightShift))
+                        dbg_step_out();
+                    else
+                        dbg_step_into();
+                }
+                if (ImGui::IsKeyPressed(ImGuiKey_F2) && has_script &&
+                    ImGui::IsKeyDown(ImGuiKey_LeftCtrl))
+                    dbg_stop();
+                if (ImGui::IsKeyPressed(ImGuiKey_O) &&
+                    ImGui::IsKeyDown(ImGuiKey_LeftCtrl))
+                    g_open_file_modal = true;
+                if (ImGui::IsKeyPressed(ImGuiKey_R) &&
+                    ImGui::IsKeyDown(ImGuiKey_LeftCtrl) &&
+                    strlen(g_filepath_buf) > 0) {
+                    dbg_stop();
+                    dbg_load_script(g_filepath_buf);
+                }
+            }
+        }
 
         /* ---- Draw debug toolbar (below menu bar, above dockspace) ---- */
         if (g_show_controls)
