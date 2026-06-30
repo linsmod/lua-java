@@ -204,6 +204,9 @@ static bool g_show_breakpoints = true;
 /* Pending layout-reset flag (set by menu, handled at dockspace setup) */
 static bool g_pending_layout_reset = false;
 
+/* Layout profile: 0 = two-column (left 65%+right 35%), 1 = three-column */
+static int  g_layout_mode = 0;
+
 /* File > Open modal */
 static bool g_open_file_modal = false;
 
@@ -1701,7 +1704,8 @@ static void draw_console() {
  *  and Reset-to-Default).  Caller must ensure the dockspace
  *  node does NOT exist yet (or has been removed).
  * ============================================================ */
-static void build_default_dock_layout(ImGuiID dockspace_id) {
+/* ---- Layout A: two-column (original) ---- */
+static void build_twocol_dock_layout(ImGuiID dockspace_id) {
     ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
     ImGui::DockBuilderSetNodeSize(dockspace_id, viewport->WorkSize);
@@ -1734,6 +1738,60 @@ static void build_default_dock_layout(ImGuiID dockspace_id) {
     ImGui::DockBuilderDockWindow("Breakpoints", dock_right_bot);
 
     ImGui::DockBuilderFinish(dockspace_id);
+}
+
+/* ---- Layout B: three-column (left sidebar + center + right sidebar) ---- */
+static void build_threecol_dock_layout(ImGuiID dockspace_id) {
+    ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(dockspace_id, viewport->WorkSize);
+
+    /* Step 1: left sidebar (18%) vs rest (82%) */
+    ImGuiID dock_left, dock_rest;
+    ImGui::DockBuilderSplitNode(
+        dockspace_id, ImGuiDir_Left, 0.18f, &dock_left, &dock_rest);
+
+    /* Step 2: right sidebar (22% of rest ≈ 18% total) vs main (64% total) */
+    ImGuiID dock_main, dock_right;
+    ImGui::DockBuilderSplitNode(
+        dock_rest, ImGuiDir_Right, 0.22f, &dock_right, &dock_main);
+
+    /* Step 3: left sidebar → 3 zones (Locals / CallStack / Breakpoints) */
+    ImGuiID dock_left_bot, dock_left_rest;
+    ImGui::DockBuilderSplitNode(
+        dock_left, ImGuiDir_Down, 0.33f, &dock_left_bot, &dock_left_rest);
+    ImGuiID dock_left_mid, dock_left_top;
+    ImGui::DockBuilderSplitNode(
+        dock_left_rest, ImGuiDir_Down, 0.50f, &dock_left_mid, &dock_left_top);
+
+    /* Step 4: right sidebar → 2 zones (Registers / Bytecode) */
+    ImGuiID dock_right_bot, dock_right_top;
+    ImGui::DockBuilderSplitNode(
+        dock_right, ImGuiDir_Down, 0.50f, &dock_right_bot, &dock_right_top);
+
+    /* Step 5: main area → Source (top) / Console (bottom) */
+    ImGuiID dock_console, dock_center;
+    ImGui::DockBuilderSplitNode(
+        dock_main, ImGuiDir_Down, 0.28f, &dock_console, &dock_center);
+
+    /* Dock windows */
+    ImGui::DockBuilderDockWindow("Locals",       dock_left_top);
+    ImGui::DockBuilderDockWindow("Call Stack",   dock_left_mid);
+    ImGui::DockBuilderDockWindow("Breakpoints",  dock_left_bot);
+    ImGui::DockBuilderDockWindow("Registers",    dock_right_top);
+    ImGui::DockBuilderDockWindow("Bytecode",     dock_right_bot);
+    ImGui::DockBuilderDockWindow("Source Code",  dock_center);
+    ImGui::DockBuilderDockWindow("Console",      dock_console);
+
+    ImGui::DockBuilderFinish(dockspace_id);
+}
+
+/* Pick layout based on g_layout_mode */
+static void build_default_dock_layout(ImGuiID dockspace_id) {
+    if (g_layout_mode == 1)
+        build_threecol_dock_layout(dockspace_id);
+    else
+        build_twocol_dock_layout(dockspace_id);
 }
 
 /* ============================================================
@@ -1893,6 +1951,13 @@ static void draw_main_menu() {
             ImGui::MenuItem("Breakpoints",   nullptr, &g_show_breakpoints);
             ImGui::Separator();
             ImGui::MenuItem("Debug Toolbar",  nullptr, &g_show_controls);
+            ImGui::Separator();
+            /* Layout profile selector */
+            if (ImGui::RadioButton("Two-Column Layout",  &g_layout_mode, 0))
+                reset_to_default_layout();
+            if (ImGui::RadioButton("Three-Column Layout", &g_layout_mode, 1))
+                reset_to_default_layout();
+            ImGui::Separator();
             if (ImGui::MenuItem("Save Layout"))    save_layout();
             if (ImGui::MenuItem("Load Layout"))    load_layout();
             ImGui::Separator();
