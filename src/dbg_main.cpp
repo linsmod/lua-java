@@ -31,6 +31,9 @@
 #include <deque>
 #include <sys/stat.h>
 #include <sys/types.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 extern "C" {
 #include "lua.h"
@@ -2412,9 +2415,15 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+#ifdef _WIN32
+    /* Windows: set DPI awareness before GLFW init */
+    SetProcessDPIAware();
+#endif
+
     const char *glsl_version = "#version 130";
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+    glfwWindowHint(GLFW_SCALE_TO_MONITOR, GLFW_TRUE);
 
     g_window = glfwCreateWindow(1280, 900,
                                  "Lua Debugger - ImGui",
@@ -2430,6 +2439,11 @@ int main(int argc, char *argv[]) {
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
 
+    /* ---- Detect DPI scale ---- */
+    float xscale = 1.0f, yscale = 1.0f;
+    glfwGetWindowContentScale(window, &xscale, &yscale);
+    float dpi_scale = (xscale > yscale) ? xscale : yscale;
+
     /* Init ImGui */
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -2443,7 +2457,7 @@ int main(int argc, char *argv[]) {
     io.IniFilename = nullptr;
     ImGui::LoadIniSettingsFromMemory("", 0);
 
-    /* Load CJK-capable font as primary; fall back to default if not found */
+    /* Load CJK-capable font at DPI-scaled size */
     {
         const char *cjk_paths[] = {
             "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
@@ -2456,11 +2470,9 @@ int main(int argc, char *argv[]) {
             if (fp) {
                 fclose(fp);
                 ImFontConfig cfg;
-                /* FontNo=2 selects the SC (Simplified Chinese) face inside
-                 * NotoSansCJK TTC; it is harmless but ignored for plain TTF. */
                 bool is_ttc = (strstr(path, ".ttc") || strstr(path, ".TTC"));
                 if (is_ttc) cfg.FontNo = 2;
-                io.Fonts->AddFontFromFileTTF(path, 16.0f, &cfg,
+                io.Fonts->AddFontFromFileTTF(path, 16.0f * dpi_scale, &cfg,
                     io.Fonts->GetGlyphRangesChineseFull());
                 loaded = true;
                 break;
@@ -2471,6 +2483,7 @@ int main(int argc, char *argv[]) {
     }
 
     ImGui::StyleColorsDark();
+    ImGui::GetStyle().ScaleAllSizes(dpi_scale);
 
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glsl_version);
