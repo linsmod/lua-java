@@ -94,6 +94,7 @@ struct MainCandidate {
 };
 static std::vector<MainCandidate> g_main_candidates;
 static int g_main_selected = 0;   /* index into g_main_candidates */
+static std::string g_cur_main_name;  /* class name of currently running main() */
 
 /* Recent file list (most recent first, max 10 entries, no duplicates) */
 static std::deque<std::string> g_recent_files;
@@ -335,6 +336,10 @@ static void run_main_candidate(int idx) {
     lua_rawgeti(g_mainL, LUA_REGISTRYINDEX, c.func_ref);
     lua_xmove(g_mainL, g_co, 1);
 
+    /* Record the class name so snapshot_callstack can display it
+     * (Lua's getfuncname returns NULL for functions called from C). */
+    g_cur_main_name = c.class_name;
+
     /* Set debug hook so breakpoints work inside main() */
     lua_sethook(g_co, debug_hook, LUA_MASKLINE, 0);
     g_pause_on_entry = g_break_on_main;
@@ -469,8 +474,18 @@ static void snapshot_callstack(lua_State *L) {
     lua_Debug ar;
     for (int level = 0; lua_getstack(L, level, &ar); level++) {
         lua_getinfo(L, "nSl", &ar);
+        /* Lua's getfuncname returns NULL for functions called directly from C
+         * (e.g. via lua_resume). When the top-level frame has no name and we
+         * are running a main() candidate, inject the class name. */
+        const char *name = ar.name;
+        char name_buf[128];
+        if (!name && g_in_main_run && level == 0 && !g_cur_main_name.empty()) {
+            snprintf(name_buf, sizeof(name_buf), "%s.main",
+                     g_cur_main_name.c_str());
+            name = name_buf;
+        }
         g_callstack_cache.push_back({
-            ar.name ? ar.name : "?",
+            name ? name : "?",
             ar.short_src[0] ? ar.short_src : "?",
             ar.currentline
         });
@@ -841,6 +856,7 @@ static bool dbg_load_script(const char *filename) {
         console_add(lua_tostring(g_co, -1), ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
         lua_pop(g_co, 1);
         g_in_main_run = false;
+        g_cur_main_name.clear();
         g_dbg_state = DBG_IDLE;
         return false;
     }
@@ -886,6 +902,7 @@ static bool dbg_tick() {
         if (g_in_main_run) {
             /* main() candidate just finished — extract exit code */
             g_in_main_run = false;
+            g_cur_main_name.clear();
             g_has_exit_code = false;
             g_last_exit_code = 0;
 
@@ -993,6 +1010,7 @@ static bool dbg_tick() {
                     ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
         lua_pop(g_co, 1);
         g_in_main_run = false;
+        g_cur_main_name.clear();
         g_dbg_state = DBG_IDLE;
         lua_sethook(g_co, nullptr, 0, 0);
         return false;
