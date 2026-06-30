@@ -1718,6 +1718,9 @@ static void enum_definition(JLexState *ls, int class_reg, int main_cands_reg) {
   int enum_table_reg = ls->fs->freereg;
   luaK_codeABC(ls->fs, OP_NEWTABLE, enum_table_reg, 0, 0);
   ls->fs->freereg = enum_table_reg + 2;  /* reserve reg+1 for temp values */
+  /* Ensure maxstacksize accounts for temp registers (see commits 2daeabf, 9e39aaf) */
+  if (ls->fs->f->maxstacksize < (lu_byte)(enum_table_reg + 2))
+    ls->fs->f->maxstacksize = (lu_byte)(enum_table_reg + 2);
 
   int idx = 0;
   while (ls->t.token != '}' && ls->t.token != TK_JAVA_EOS) {
