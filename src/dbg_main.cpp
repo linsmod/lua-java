@@ -103,6 +103,7 @@ static const int RECENT_MAX = 10;
 static void clear_main_candidates();
 static void run_main_candidate(int idx);
 static void debug_hook(lua_State *L, lua_Debug *ar);
+static void config_save();
 
 static void recent_add(const char *path) {
     if (!path || !*path) return;
@@ -1170,8 +1171,7 @@ static void draw_source_view() {
         ImGui::SetScrollY((g_cur_line - 5) * line_h);
     }
 
-    ImGui::BeginChild("SourceLines", ImVec2(0, 0), false,
-                       ImGuiWindowFlags_AlwaysVerticalScrollbar);
+    ImGui::BeginChild("SourceLines", ImVec2(0, 0), false);
 
     const auto &lines = it->second;
     ImGuiListClipper clipper;
@@ -1260,8 +1260,7 @@ static void draw_bytecode_view() {
     ImGui::Separator();
 
     if (p->sizecode > 0) {
-        ImGui::BeginChild("CodeScroll", ImVec2(0, 0), false,
-                           ImGuiWindowFlags_AlwaysVerticalScrollbar);
+        ImGui::BeginChild("CodeScroll", ImVec2(0, 0), false);
 
         if (curpc >= 0) {
             float line_h = ImGui::GetTextLineHeight();
@@ -1627,8 +1626,7 @@ static void draw_console() {
     ImGui::Begin("Console");
 
     /* Output area */
-    ImGui::BeginChild("ConsoleOutput", ImVec2(0, -30), false,
-                       ImGuiWindowFlags_AlwaysVerticalScrollbar);
+    ImGui::BeginChild("ConsoleOutput", ImVec2(0, -30), false);
 
     /* Auto-scroll */
     static bool auto_scroll = true;
@@ -1813,22 +1811,6 @@ static void reset_to_default_layout() {
  * ============================================================ */
 static std::string config_dir();  /* forward declaration */
 
-static std::string layout_path() {
-    return config_dir() + "/layout.ini";
-}
-
-static void save_layout() {
-    std::string dir = config_dir();
-    mkdir(dir.c_str(), 0755);
-    ImGui::SaveIniSettingsToDisk(layout_path().c_str());
-}
-
-static void load_layout() {
-    struct stat st;
-    if (stat(layout_path().c_str(), &st) != 0) return;  /* file missing */
-    ImGui::LoadIniSettingsFromDisk(layout_path().c_str());
-}
-
 static void draw_main_menu() {
     bool can_step   = (g_dbg_state == DBG_PAUSED);
     bool can_cont   = (g_dbg_state == DBG_PAUSED);
@@ -1953,10 +1935,14 @@ static void draw_main_menu() {
             ImGui::MenuItem("Debug Toolbar",  nullptr, &g_show_controls);
             ImGui::Separator();
             /* Layout profile selector */
-            if (ImGui::RadioButton("Two-Column Layout",  &g_layout_mode, 0))
+            if (ImGui::RadioButton("Two-Column Layout",  &g_layout_mode, 0)) {
                 reset_to_default_layout();
-            if (ImGui::RadioButton("Three-Column Layout", &g_layout_mode, 1))
+                config_save();
+            }
+            if (ImGui::RadioButton("Three-Column Layout", &g_layout_mode, 1)) {
                 reset_to_default_layout();
+                config_save();
+            }
             ImGui::Separator();
             if (ImGui::MenuItem("Save Layout"))    save_layout();
             if (ImGui::MenuItem("Load Layout"))    load_layout();
@@ -2241,8 +2227,7 @@ static void draw_breakpoints() {
     ImGui::Separator();
 
     /* ---- Breakpoint list ---- */
-    ImGui::BeginChild("BpList", ImVec2(0, 0), false,
-                       ImGuiWindowFlags_AlwaysVerticalScrollbar);
+    ImGui::BeginChild("BpList", ImVec2(0, 0), false);
 
     /* Collect flat sorted list for display */
     struct BpDisplay {
@@ -2333,6 +2318,7 @@ static void config_save() {
         fprintf(f, "recent %s\n", rf.c_str());
     fprintf(f, "break_on_main %d\n", g_break_on_main ? 1 : 0);
     fprintf(f, "show_toolbar %d\n", g_show_controls ? 1 : 0);
+    fprintf(f, "layout_mode %d\n", g_layout_mode);
     for (auto &fe : g_breakpoints) {
         for (auto &bp : fe.second)
             fprintf(f, "bp %s %d %d\n", fe.first.c_str(), bp.first,
@@ -2371,6 +2357,9 @@ static void config_load() {
         } else if (strcmp(type, "show_toolbar") == 0) {
             sscanf(line, "%*s %d", &arg2);
             g_show_controls = (arg2 != 0);
+        } else if (strcmp(type, "layout_mode") == 0) {
+            sscanf(line, "%*s %d", &arg2);
+            g_layout_mode = (arg2 != 0) ? 1 : 0;
         } else if (strcmp(type, "bp") == 0) {
             int arg3 = 1;
             int n = sscanf(line, "%*s %2047s %d %d", arg1, &arg2, &arg3);
@@ -2433,6 +2422,9 @@ int main(int argc, char *argv[]) {
 
     /* Load persisted config (recent files, break-on-main, breakpoints) */
     config_load();
+
+    /* Rebuild dock layout from stored mode (overrides any stale layout.ini) */
+    g_pending_layout_reset = true;
 
     /* Override print() to redirect to our console */
     lua_register(g_mainL, "print", lua_print_hook);
