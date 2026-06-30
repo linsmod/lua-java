@@ -1944,9 +1944,6 @@ static void draw_main_menu() {
                 config_save();
             }
             ImGui::Separator();
-            if (ImGui::MenuItem("Save Layout"))    save_layout();
-            if (ImGui::MenuItem("Load Layout"))    load_layout();
-            ImGui::Separator();
             if (ImGui::MenuItem("Reset to Default Layout")) {
                 reset_to_default_layout();
             }
@@ -2544,9 +2541,6 @@ int main(int argc, char *argv[]) {
 
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glsl_version);
-
-    /* Load saved window layout from ~/.luad/layout.ini if present */
-    load_layout();
 
     /* ---- Auto-load a file if provided ---- */
     if (load_file) {
