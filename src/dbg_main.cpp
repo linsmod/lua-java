@@ -2386,6 +2386,432 @@ static void config_load() {
 }
 
 /* ============================================================
+ *  Batch mode / command-line debugger
+ * ============================================================ */
+static bool g_batch_mode   = false;
+static FILE *g_cmd_file     = nullptr;  /* if --command=FILE, read cmds from file */
+
+/* print to console (in batch mode, also print to stdout) */
+static void batch_print(const char *s, ImVec4 color = ImVec4(1,1,1,1)) {
+    console_add(s, color);
+    if (g_batch_mode) {
+        /* strip trailing newline from console_add if any, then add our own */
+        fprintf(stdout, "%s\n", s ? s : "");
+        fflush(stdout);
+    }
+}
+
+/* print current location */
+static void batch_show_location() {
+    if (!g_cur_source.empty()) {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "* %s:%d", g_cur_source.c_str(), g_cur_line);
+        batch_print(buf, ImVec4(0.5f, 0.8f, 1.0f, 1.0f));
+    }
+}
+
+/* print call stack */
+static void batch_bt() {
+    if (g_callstack_cache.empty()) {
+        batch_print("(empty)");
+        return;
+    }
+    char buf[512];
+    for (int i = (int)g_callstack_cache.size() - 1; i >= 0; i--) {
+        auto &f = g_callstack_cache[i];
+        snprintf(buf, sizeof(buf), "#%-2d  %s at %s:%d",
+                 (int)g_callstack_cache.size() - 1 - i,
+                 f.name.c_str(), f.source.c_str(), f.line);
+        batch_print(buf);
+    }
+}
+
+/* print locals */
+static void batch_info_locals() {
+    if (g_locals_cache.empty() && g_upvals_cache.empty()) {
+        batch_print("(no locals)");
+        return;
+    }
+    char buf[512];
+    for (auto &l : g_locals_cache) {
+        snprintf(buf, sizeof(buf), "  %-20s = %s", l.name.c_str(), l.value.c_str());
+        batch_print(buf);
+    }
+    for (auto &u : g_upvals_cache) {
+        snprintf(buf, sizeof(buf), "  [up] %-17s = %s", u.name.c_str(), u.value.c_str());
+        batch_print(buf);
+    }
+}
+
+/* print registers */
+static void batch_info_registers() {
+    if (g_registers_cache.empty()) {
+        batch_print("(no registers)");
+        return;
+    }
+    char buf[256];
+    for (auto &r : g_registers_cache) {
+        const char *mark = r.is_top ? " [top]" : "";
+        const char *parm = r.is_params ? " [param]" : "";
+        snprintf(buf, sizeof(buf), "  R%-3d %-8s %s%s%s",
+                 r.index, r.type.c_str(), r.value.c_str(), mark, parm);
+        batch_print(buf);
+    }
+}
+
+/* print bytecode around current pc */
+static void batch_disasm(int context) {
+    if (!g_bytecode_proto || g_bytecode_curpc < 0) {
+        batch_print("(no bytecode)");
+        return;
+    }
+    const Proto *p = (const Proto *)g_bytecode_proto;
+    int cur = g_bytecode_curpc;
+    int start = cur - context;
+    if (start < 0) start = 0;
+    int end = cur + context + 1;
+    if (end > p->sizecode) end = p->sizecode;
+    char buf[256];
+    for (int i = start; i < end; i++) {
+        Instruction inst = p->code[i];
+        OpCode op = GET_OPCODE(inst);
+        snprintf(buf, sizeof(buf), "%s%4d %-9s A=%-2d B=%-2d C=%-4d",
+                 (i == cur) ? "->" : "  ", i,
+                 luaP_opnames[op],
+                 GETARG_A(inst), GETARG_B(inst), GETARG_C(inst));
+        batch_print(buf);
+    }
+}
+
+/* helper: get a line from stdin or cmd file */
+static bool batch_getline(char *buf, int size) {
+    if (g_cmd_file) {
+        if (!fgets(buf, size, g_cmd_file)) return false;
+        /* echo command to stdout */
+        fprintf(stdout, "(cmd) %s", buf);
+        fflush(stdout);
+        return true;
+    }
+    fprintf(stdout, "(lua-dbg) ");
+    fflush(stdout);
+    return fgets(buf, size, stdin) != nullptr;
+}
+
+/* batch mode main loop */
+static void batch_loop(const char *initial_file) {
+    /* load initial file if provided */
+    if (initial_file) {
+        dbg_load_script(initial_file);
+        /* tick once to start execution / hit first breakpoint */
+        if (g_dbg_state == DBG_RUNNING || g_dbg_state == DBG_STEPPING) {
+            dbg_tick();
+        }
+        batch_show_location();
+    }
+
+    char line[1024];
+    while (batch_getline(line, sizeof(line))) {
+        /* trim trailing newline */
+        size_t len = strlen(line);
+        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r'))
+            line[--len] = '\0';
+        if (len == 0) continue;
+
+        /* split into cmd + args */
+        char cmd[64] = {0}, arg[512] = {0}, arg2[512] = {0};
+        int n = sscanf(line, "%63s %511s %511s", cmd, arg, arg2);
+
+        /* ---- run / r ---- */
+        if (strcmp(cmd, "r") == 0 || strcmp(cmd, "run") == 0) {
+            if (n >= 2) {
+                /* load a new file */
+                dbg_stop();
+                dbg_load_script(arg);
+            } else if (g_dbg_state == DBG_IDLE && !g_recent_files.empty()) {
+                /* re-run the most recent file */
+                dbg_stop();
+                dbg_load_script(g_recent_files.front().c_str());
+            } else {
+                batch_print("No file specified.");
+                continue;
+            }
+            if (g_dbg_state == DBG_RUNNING || g_dbg_state == DBG_STEPPING)
+                dbg_tick();
+            batch_show_location();
+        }
+
+        /* ---- file ---- */
+        else if (strcmp(cmd, "file") == 0) {
+            if (n < 2) {
+                batch_print("Usage: file <path>");
+                continue;
+            }
+            dbg_stop();
+            dbg_load_script(arg);
+            if (g_dbg_state == DBG_RUNNING || g_dbg_state == DBG_STEPPING)
+                dbg_tick();
+            batch_show_location();
+        }
+
+        /* ---- continue / c ---- */
+        else if (strcmp(cmd, "c") == 0 || strcmp(cmd, "continue") == 0) {
+            if (g_dbg_state != DBG_PAUSED) {
+                batch_print("Not paused.");
+                continue;
+            }
+            dbg_continue();
+            dbg_tick();
+            batch_show_location();
+        }
+
+        /* ---- next / n (step over) ---- */
+        else if (strcmp(cmd, "n") == 0 || strcmp(cmd, "next") == 0) {
+            if (g_dbg_state != DBG_PAUSED) {
+                batch_print("Not paused.");
+                continue;
+            }
+            dbg_step_over();
+            dbg_tick();
+            batch_show_location();
+        }
+
+        /* ---- step / s (step into) ---- */
+        else if (strcmp(cmd, "s") == 0 || strcmp(cmd, "step") == 0) {
+            if (g_dbg_state != DBG_PAUSED) {
+                batch_print("Not paused.");
+                continue;
+            }
+            dbg_step_into();
+            dbg_tick();
+            batch_show_location();
+        }
+
+        /* ---- finish / fin (step out) ---- */
+        else if (strcmp(cmd, "fin") == 0 || strcmp(cmd, "finish") == 0) {
+            if (g_dbg_state != DBG_PAUSED) {
+                batch_print("Not paused.");
+                continue;
+            }
+            dbg_step_out();
+            dbg_tick();
+            batch_show_location();
+        }
+
+        /* ---- bt / backtrace ---- */
+        else if (strcmp(cmd, "bt") == 0 || strcmp(cmd, "backtrace") == 0) {
+            batch_bt();
+        }
+
+        /* ---- info locals / i loc ---- */
+        else if (strcmp(cmd, "i") == 0 || strcmp(cmd, "info") == 0) {
+            if (strcmp(arg, "locals") == 0 || strcmp(arg, "loc") == 0 ||
+                strcmp(arg, "lo") == 0) {
+                batch_info_locals();
+            } else if (strcmp(arg, "registers") == 0 || strcmp(arg, "reg") == 0 ||
+                       strcmp(arg, "r") == 0) {
+                batch_info_registers();
+            } else if (strcmp(arg, "breakpoints") == 0 || strcmp(arg, "b") == 0) {
+                for (auto &kv : g_breakpoints) {
+                    for (auto &bp : kv.second) {
+                        char buf[256];
+                        snprintf(buf, sizeof(buf), "  %s:%d %s",
+                                 kv.first.c_str(), bp.first,
+                                 bp.second ? "enabled" : "disabled");
+                        batch_print(buf);
+                    }
+                }
+            } else if (strcmp(arg, "args") == 0 || strcmp(arg, "a") == 0) {
+                batch_info_locals();
+            } else {
+                batch_print("Usage: info <locals|registers|breakpoints|args>");
+            }
+        }
+
+        /* ---- break / b ---- */
+        else if (strcmp(cmd, "b") == 0 || strcmp(cmd, "break") == 0) {
+            if (n < 2) {
+                /* list breakpoints */
+                for (auto &kv : g_breakpoints) {
+                    for (auto &bp : kv.second) {
+                        char buf[256];
+                        snprintf(buf, sizeof(buf), "  %s:%d %s",
+                                 kv.first.c_str(), bp.first,
+                                 bp.second ? "enabled" : "disabled");
+                        batch_print(buf);
+                    }
+                }
+                continue;
+            }
+            /* parse file:line or line */
+            char *colon = strchr(arg, ':');
+            if (colon) {
+                *colon = '\0';
+                int lnum = atoi(colon + 1);
+                g_breakpoints[arg][lnum] = true;
+                batch_print("Breakpoint set.");
+            } else {
+                int lnum = atoi(arg);
+                if (!g_cur_source.empty()) {
+                    g_breakpoints[g_cur_source][lnum] = true;
+                    batch_print("Breakpoint set.");
+                }
+            }
+        }
+
+        /* ---- delete / d ---- */
+        else if (strcmp(cmd, "d") == 0 || strcmp(cmd, "delete") == 0) {
+            if (n < 2) {
+                batch_print("Usage: delete <line> or delete <file:line>");
+                continue;
+            }
+            char *colon = strchr(arg, ':');
+            if (colon) {
+                *colon = '\0';
+                int lnum = atoi(colon + 1);
+                bp_delete(arg, lnum);
+                batch_print("Breakpoint deleted.");
+            } else {
+                int lnum = atoi(arg);
+                if (!g_cur_source.empty()) {
+                    bp_delete(g_cur_source, lnum);
+                    batch_print("Breakpoint deleted.");
+                }
+            }
+        }
+
+        /* ---- print / p ---- */
+        else if (strcmp(cmd, "p") == 0 || strcmp(cmd, "print") == 0) {
+            if (n < 2) {
+                batch_print("Usage: print <expression>");
+                continue;
+            }
+            if (g_dbg_state != DBG_PAUSED) {
+                batch_print("Not paused.");
+                continue;
+            }
+            /* dbg_eval writes to console, but we need to capture result */
+            lua_Debug ar;
+            if (!lua_getstack(g_co, 0, &ar)) {
+                batch_print("No stack frame.");
+                continue;
+            }
+            /* Use the rest of the line after 'p ' as expression */
+            const char *expr = line;
+            while (*expr && isspace(*expr)) expr++;  /* skip leading spaces */
+            if (*expr == 'p') {
+                expr++;
+                if (*expr == 'r' && *(expr+1) == 'i' && *(expr+2) == 'n' && *(expr+3) == 't')
+                    expr += 5;
+                else
+                    while (*expr && !isspace(*expr)) expr++;
+            }
+            while (*expr && isspace(*expr)) expr++;
+
+            std::string code = std::string("return ") + expr;
+            int status = luaL_loadstring(g_co, code.c_str());
+            if (status != LUA_OK) {
+                lua_pop(g_co, 1);
+                status = luaL_loadstring(g_co, expr);
+            }
+            if (status != LUA_OK) {
+                batch_print(lua_tostring(g_co, -1), ImVec4(1,0.3f,0.3f,1));
+                lua_pop(g_co, 1);
+                continue;
+            }
+
+            /* set upvalues so closure sees local variables */
+            lua_getinfo(g_co, "f", &ar);
+            for (int i = 1; ; i++) {
+                const char *lname = lua_getlocal(g_co, &ar, i);
+                if (!lname) break;
+                if (!lua_setupvalue(g_co, -2, i))
+                    lua_pop(g_co, 1);
+            }
+            lua_pop(g_co, 1);  /* pop function from lua_getinfo */
+
+            /* call the expression closure */
+            status = lua_pcall(g_co, 0, 1, 0);
+            if (status != LUA_OK) {
+                batch_print(lua_tostring(g_co, -1), ImVec4(1,0.3f,0.3f,1));
+                lua_pop(g_co, 1);
+                continue;
+            }
+            char valbuf[512];
+            const char *val = lua_val_tostring(g_co, -1, valbuf, sizeof(valbuf));
+            char outbuf[512];
+            snprintf(outbuf, sizeof(outbuf), "$ = %s", val);
+            batch_print(outbuf, ImVec4(0.7f, 1.0f, 0.7f, 1.0f));
+            lua_pop(g_co, 1);
+        }
+
+        /* ---- list / l ---- */
+        else if (strcmp(cmd, "l") == 0 || strcmp(cmd, "list") == 0) {
+            int show_line = g_cur_line;
+            if (n >= 2) show_line = atoi(arg);
+            if (g_cur_source.empty()) {
+                batch_print("No source file.");
+                continue;
+            }
+            auto it = g_sources.find(g_cur_source);
+            if (it == g_sources.end()) {
+                batch_print("Source not loaded.");
+                continue;
+            }
+            int total = (int)it->second.size();
+            int start = show_line - 5;
+            if (start < 1) start = 1;
+            int end = start + 10;
+            if (end > total) end = total;
+            char buf[512];
+            for (int i = start; i <= end; i++) {
+                snprintf(buf, sizeof(buf), "%s%-4d %s",
+                         (i == g_cur_line) ? "->" : "  ",
+                         i, it->second[i-1].c_str());
+                batch_print(buf);
+            }
+        }
+
+        /* ---- disassemble / disas ---- */
+        else if (strcmp(cmd, "disas") == 0 || strcmp(cmd, "disassemble") == 0) {
+            batch_disasm(5);
+        }
+
+        /* ---- quit / q ---- */
+        else if (strcmp(cmd, "q") == 0 || strcmp(cmd, "quit") == 0) {
+            break;
+        }
+
+        /* ---- help / h ---- */
+        else if (strcmp(cmd, "h") == 0 || strcmp(cmd, "help") == 0) {
+            batch_print("Commands:");
+            batch_print("  r[un] [file]       - load file and run (or restart)");
+            batch_print("  file <path>        - load a new script");
+            batch_print("  c[ontinue]         - continue execution");
+            batch_print("  n[ext]             - step over");
+            batch_print("  s[tep]             - step into");
+            batch_print("  fin[ish]           - step out");
+            batch_print("  bt / backtrace     - show call stack");
+            batch_print("  i[nfo] locals      - show local variables");
+            batch_print("  i[nfo] registers   - show VM registers");
+            batch_print("  i[nfo] breakpoints - list breakpoints");
+            batch_print("  b[reak] <line>     - set breakpoint at current file");
+            batch_print("  b[reak] <file:line>- set breakpoint");
+            batch_print("  d[elete] <line>    - delete breakpoint");
+            batch_print("  p[rint] <expr>     - evaluate expression");
+            batch_print("  l[ist] [line]      - show source around line");
+            batch_print("  disas[semble]      - show bytecode around PC");
+            batch_print("  q[uit]             - exit debugger");
+            batch_print("  h[elp]             - this help");
+        }
+
+        /* ---- empty line repeats last command ---- */
+        else {
+            batch_print("Unknown command. Try 'help'.");
+        }
+    }
+}
+
+/* ============================================================
  *  Main
  * ============================================================ */
 static void glfw_error_callback(int error, const char *description) {
@@ -2393,9 +2819,32 @@ static void glfw_error_callback(int error, const char *description) {
 }
 
 int main(int argc, char *argv[]) {
-    /* ---- Parse arguments for an optional file to load ---- */
-    const char *load_file = nullptr;
-    if (argc > 1) load_file = argv[1];
+    /* ---- Parse arguments ---- */
+    const char *load_file   = nullptr;
+    const char *cmd_file    = nullptr;
+    bool batch_mode         = false;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--batch") == 0 || strcmp(argv[i], "-batch") == 0) {
+            batch_mode = true;
+        } else if ((strcmp(argv[i], "--command") == 0 || strcmp(argv[i], "-x") == 0) && i + 1 < argc) {
+            cmd_file = argv[++i];
+        } else if (argv[i][0] != '-') {
+            load_file = argv[i];
+        }
+    }
+
+    /* If --command is used without --batch, imply --batch */
+    if (cmd_file && !batch_mode) batch_mode = true;
+    g_batch_mode = batch_mode;
+
+    if (batch_mode && cmd_file) {
+        g_cmd_file = fopen(cmd_file, "r");
+        if (!g_cmd_file) {
+            fprintf(stderr, "Cannot open command file: %s\n", cmd_file);
+            return 1;
+        }
+    }
 
     /* ---- 1. Init Lua ---- */
     g_mainL = luaL_newstate();
@@ -2478,6 +2927,20 @@ int main(int argc, char *argv[]) {
     lua_pushvalue(g_mainL, -1);
     lua_setfield(g_mainL, LUA_REGISTRYINDEX, "_dbg_co");
     lua_pop(g_mainL, 1);
+
+    /* ---- 3. Batch mode or GUI mode ---- */
+    if (batch_mode) {
+        /* Batch mode: skip GLFW/ImGui, use command-line interface */
+        if (load_file) {
+            snprintf(g_filepath_buf, sizeof(g_filepath_buf), "%s", load_file);
+        }
+        batch_loop(load_file);
+
+        config_save();
+        if (g_cmd_file) fclose(g_cmd_file);
+        lua_close(g_mainL);
+        return 0;
+    }
 
     /* ---- 3. Init GLFW + ImGui ---- */
     glfwSetErrorCallback(glfw_error_callback);
