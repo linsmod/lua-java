@@ -1460,7 +1460,8 @@ static int parse_method_params(JLexState *ls, int *has_varargs, TString **vararg
 /* parse a Java method (or field if no '(' follows).
  * Returns 1 if this is a constructor, 0 otherwise. */
 static int method_definition(JLexState *ls, FuncState *fs, int class_reg,
-                              TString *class_name) {
+                              TString *class_name, int *has_main,
+                              int main_cands_reg) {
   (void)fs;
 
   /* Capture line where method/ctor definition starts */
@@ -1681,7 +1682,16 @@ static int method_definition(JLexState *ls, FuncState *fs, int class_reg,
 
   /* if static, also expose in _ENV for unqualified access (e.g. add(5,7)) */
   if (is_static) {
-    luaK_codeABC(ls->fs, OP_SETTABUP, 0, mk | BITRK, reg);
+    if (has_main && method_name == luaS_newliteral(ls->L, "main")) {
+      if (*has_main)
+        jlex_syntaxerror(ls, "duplicate static 'main' definition");
+      *has_main = 1;
+      /* store in _MAIN_CANDIDATES[class_name] instead of _ENV */
+      int ck = luaK_stringK(ls->fs, class_name);
+      luaK_codeABC(ls->fs, OP_SETTABLE, main_cands_reg, ck | BITRK, reg);
+    } else {
+      luaK_codeABC(ls->fs, OP_SETTABUP, 0, mk | BITRK, reg);
+    }
   }
 
   /* if constructor, also store as "new" for lookup */
@@ -1695,7 +1705,7 @@ static int method_definition(JLexState *ls, FuncState *fs, int class_reg,
 }
 
 /* parse an enum inside class body */
-static void enum_definition(JLexState *ls, int class_reg) {
+static void enum_definition(JLexState *ls, int class_reg, int main_cands_reg) {
   next(ls); /* skip 'enum' */
 
   if (ls->t.token != TK_JAVA_NAME)
@@ -1737,7 +1747,7 @@ static void enum_definition(JLexState *ls, int class_reg) {
           int la = jlex_lookahead(ls);
           if (la == '(') {
             /* method */
-            method_definition(ls, ls->fs, enum_table_reg, NULL);
+            method_definition(ls, ls->fs, enum_table_reg, NULL, NULL, main_cands_reg);
           } else {
             /* skip */
             next(ls);
@@ -1767,7 +1777,8 @@ static void enum_definition(JLexState *ls, int class_reg) {
 }
 
 /* parse a Java class */
-static void class_definition(JLexState *ls, FuncState *fs) {
+static void class_definition(JLexState *ls, FuncState *fs, int *has_main,
+                              int main_cands_reg) {
   next(ls); /* skip 'class' */
 
   if (ls->t.token != TK_JAVA_NAME)
@@ -1805,7 +1816,7 @@ static void class_definition(JLexState *ls, FuncState *fs) {
 
     /* enum (with optional modifiers) */
     if (first == TK_JAVA_ENUM) {
-      enum_definition(ls, class_reg);
+      enum_definition(ls, class_reg, main_cands_reg);
       continue;
     }
     if (first == TK_JAVA_PUBLIC || first == TK_JAVA_PRIVATE ||
@@ -1814,7 +1825,7 @@ static void class_definition(JLexState *ls, FuncState *fs) {
       int la = jlex_lookahead(ls);
       if (la == TK_JAVA_ENUM) {
         next(ls); /* skip modifier (consumes lookahead) */
-        enum_definition(ls, class_reg);
+        enum_definition(ls, class_reg, main_cands_reg);
         continue;
       }
       /* Lookahead was not 'enum'. Keep it — method_definition will
@@ -1826,7 +1837,7 @@ static void class_definition(JLexState *ls, FuncState *fs) {
         first == TK_JAVA_PROTECTED || first == TK_JAVA_STATIC ||
         first == TK_JAVA_FINAL || is_type_token(first) ||
         first == TK_JAVA_NAME) {
-      if (method_definition(ls, fs, class_reg, class_name))
+      if (method_definition(ls, fs, class_reg, class_name, has_main, main_cands_reg))
         has_constructor = 1;
       continue;
     }
@@ -2058,14 +2069,24 @@ static void parser_main(JLexState *ls, FuncState *fs) {
     fs->freereg = reg;  /* release temporaries */
   }
 
+  /* create _MAIN_CANDIDATES = {} to collect all static main() functions */
+  int main_cands_reg = fs->freereg;
+  luaK_codeABC(fs, OP_NEWTABLE, main_cands_reg, 0, 0);
+  {
+    int k = luaK_stringK(fs, luaS_newliteral(ls->L, "_MAIN_CANDIDATES"));
+    luaK_codeABC(fs, OP_SETTABUP, 0, k | BITRK, main_cands_reg);
+  }
+  fs->freereg = main_cands_reg + 1;  /* keep register allocated */
+
   /* parse compilation unit: class definitions */
+  int has_main = 0;
   while (ls->t.token != TK_JAVA_EOS) {
     if (ls->t.token == TK_JAVA_CLASS) {
-      class_definition(ls, fs);
+      class_definition(ls, fs, &has_main, main_cands_reg);
     } else if (ls->t.token == TK_JAVA_PUBLIC) {
       next(ls);
       if (ls->t.token == TK_JAVA_CLASS) {
-        class_definition(ls, fs);
+        class_definition(ls, fs, &has_main, main_cands_reg);
       } else if (ls->t.token == TK_JAVA_INTERFACE || ls->t.token == TK_JAVA_ENUM) {
         /* skip public interface/enum for now */
         int brace_depth = 0;

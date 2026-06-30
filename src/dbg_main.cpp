@@ -59,10 +59,11 @@ LUAI_FUNC void java_openlib (lua_State *L);
  *  Debugger state
  * ============================================================ */
 enum DbgState {
-    DBG_IDLE,       /* no script loaded / execution finished */
-    DBG_RUNNING,    /* running freely */
-    DBG_STEPPING,   /* step-over / step-into / step-out in progress */
-    DBG_PAUSED      /* stopped at a breakpoint or manual pause */
+    DBG_IDLE,         /* no script loaded / execution finished */
+    DBG_RUNNING,      /* running freely */
+    DBG_STEPPING,     /* step-over / step-into / step-out in progress */
+    DBG_PAUSED,       /* stopped at a breakpoint or manual pause */
+    DBG_MAIN_SELECT   /* script done, waiting for user to choose main() */
 };
 
 static DbgState   g_dbg_state = DBG_IDLE;
@@ -77,14 +78,28 @@ static int      g_step_target  = 0;       /* stack depth for step-out */
 /* "Break on main" – pause on first executable line after load */
 static bool g_break_on_main   = true;
 static bool g_pause_on_entry  = false;    /* set on load, cleared on first pause */
+static bool g_in_main_run     = false;    /* true while executing a selected main() */
 
 /* Exit code of last script execution */
 static int  g_last_exit_code  = 0;
 static bool g_has_exit_code   = false;
 
+/* Main() candidates: collected after script chunk finishes */
+struct MainCandidate {
+    std::string class_name;
+    int         func_ref;   /* Lua registry reference */
+};
+static std::vector<MainCandidate> g_main_candidates;
+static int g_main_selected = 0;   /* index into g_main_candidates */
+
 /* Recent file list (most recent first, max 10 entries, no duplicates) */
 static std::deque<std::string> g_recent_files;
 static const int RECENT_MAX = 10;
+
+/* Forward decls */
+static void clear_main_candidates();
+static void run_main_candidate(int idx);
+static void debug_hook(lua_State *L, lua_Debug *ar);
 
 static void recent_add(const char *path) {
     if (!path || !*path) return;
@@ -284,6 +299,42 @@ static int lua_print_hook(lua_State *L) {
     }
     console_add(line.c_str(), ImVec4(0.7f, 1.0f, 0.7f, 1.0f));
     return 0;
+}
+
+/* ============================================================
+ *  Main() candidate management
+ * ============================================================ */
+static void clear_main_candidates() {
+    for (auto &c : g_main_candidates)
+        luaL_unref(g_mainL, LUA_REGISTRYINDEX, c.func_ref);
+    g_main_candidates.clear();
+    g_main_selected = 0;
+}
+
+static void run_main_candidate(int idx) {
+    if (idx < 0 || idx >= (int)g_main_candidates.size()) return;
+    auto &c = g_main_candidates[idx];
+
+    char buf[128];
+    snprintf(buf, sizeof(buf), "Calling %s.main()...", c.class_name.c_str());
+    console_add(buf, ImVec4(0.5f, 0.8f, 1.0f, 1.0f));
+
+    /* Reset coroutine for the main() execution */
+    if (g_co) lua_sethook(g_co, nullptr, 0, 0);
+    g_co = lua_newthread(g_mainL);
+    lua_setfield(g_mainL, LUA_REGISTRYINDEX, "_dbg_co");
+
+    /* Move the main() function from g_mainL registry to g_co's stack */
+    lua_rawgeti(g_mainL, LUA_REGISTRYINDEX, c.func_ref);
+    lua_xmove(g_mainL, g_co, 1);
+
+    /* Set debug hook so breakpoints work inside main() */
+    lua_sethook(g_co, debug_hook, LUA_MASKLINE, 0);
+    g_pause_on_entry = g_break_on_main;
+
+    /* Start execution — main loop will call dbg_tick() which resumes g_co */
+    g_in_main_run = true;
+    g_dbg_state = DBG_RUNNING;
 }
 
 /* ============================================================
@@ -715,6 +766,7 @@ static void debug_hook(lua_State *L, lua_Debug *ar) {
         break;
 
     case DBG_IDLE:
+    case DBG_MAIN_SELECT:
         break;
     }
 
@@ -781,6 +833,7 @@ static bool dbg_load_script(const char *filename) {
     if (status != LUA_OK) {
         console_add(lua_tostring(g_co, -1), ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
         lua_pop(g_co, 1);
+        g_in_main_run = false;
         g_dbg_state = DBG_IDLE;
         return false;
     }
@@ -821,67 +874,82 @@ static bool dbg_tick() {
     switch (status) {
     case LUA_OK: {
         /* Coroutine finished normally */
-        g_dbg_state = DBG_IDLE;
         lua_sethook(g_co, nullptr, 0, 0);
 
         /* Dump script return values for info, then discard them. */
         int nres = lua_gettop(g_mainL);
-        for (int i = 1; i <= nres; i++) {
-            if (!lua_isnoneornil(g_mainL, i)) {
-                const char *r = luaL_tolstring(g_mainL, i, nullptr);
+        for (int i = 0; i < nres; i++) {
+            if (!lua_isnoneornil(g_mainL, 1)) {
+                const char *r = luaL_tolstring(g_mainL, 1, nullptr);
                 if (r) {
                     char buf[128];
-                    snprintf(buf, sizeof(buf), "return[%d]: %s", i, r);
+                    snprintf(buf, sizeof(buf), "return[%d]: %s", i + 1, r);
                     console_add(buf, ImVec4(0.7f, 1.0f, 0.7f, 1.0f));
                 }
                 lua_pop(g_mainL, 1);
+            } else {
+                lua_pop(g_mainL, 1);
             }
         }
 
-        /* Call global main() for the real exit code. */
-        bool have_ec = false;
-        int  ec      = 0;
-        lua_getglobal(g_mainL, "main");
-        if (lua_isfunction(g_mainL, -1)) {
-            console_add("Calling main()...",
-                        ImVec4(0.5f, 0.8f, 1.0f, 1.0f));
-            if (lua_pcall(g_mainL, 0, 1, 0) == LUA_OK) {
-                have_ec = true;
-                if (!lua_isnoneornil(g_mainL, -1)) {
-                    if (lua_isinteger(g_mainL, -1))
-                        ec = (int)lua_tointeger(g_mainL, -1);
-                    /* else: non-integer return → exit 0 */
-                    const char *r = luaL_tolstring(g_mainL, -1, nullptr);
-                    console_add(r ? r : "(nil return)",
-                                ImVec4(0.7f, 1.0f, 0.7f, 1.0f));
-                    lua_pop(g_mainL, 1);
+        if (g_in_main_run) {
+            /* main() candidate just finished */
+            g_in_main_run = false;
+            g_has_exit_code = false;
+            g_last_exit_code = 0;
+            char buf[64];
+            snprintf(buf, sizeof(buf), "--- main() finished ---");
+            console_add(buf, ImVec4(0.5f, 0.8f, 1.0f, 1.0f));
+            lua_settop(g_mainL, 0);
+            g_dbg_state = DBG_IDLE;
+        } else {
+            /* Initial script chunk finished — collect main() candidates */
+            clear_main_candidates();
+            g_has_exit_code = false;
+            g_last_exit_code = 0;
+
+            lua_pushglobaltable(g_mainL);
+            lua_getfield(g_mainL, -1, "_MAIN_CANDIDATES");
+            lua_remove(g_mainL, -2);
+            if (lua_istable(g_mainL, -1)) {
+                const int MAX_MAINS = 16;
+                lua_pushnil(g_mainL);
+                while (lua_next(g_mainL, -2) != 0) {
+                    if ((int)g_main_candidates.size() >= MAX_MAINS) {
+                        lua_pop(g_mainL, 2);
+                        break;
+                    }
+                    if (lua_isfunction(g_mainL, -1)) {
+                        MainCandidate c;
+                        c.class_name = lua_tostring(g_mainL, -2)
+                                       ? lua_tostring(g_mainL, -2) : "?";
+                        c.func_ref = luaL_ref(g_mainL, LUA_REGISTRYINDEX);
+                        g_main_candidates.push_back(c);
+                    } else {
+                        lua_pop(g_mainL, 1);
+                    }
                 }
                 lua_pop(g_mainL, 1);
             } else {
-                const char *err = lua_tostring(g_mainL, -1);
-                console_add(err ? err : "Unknown error",
-                            ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
-                luaL_traceback(g_mainL, g_mainL, err ? err : "error", 1);
-                console_add(lua_tostring(g_mainL, -1),
-                            ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
-                lua_pop(g_mainL, 2);
+                lua_pop(g_mainL, 1);
             }
-        } else {
-            lua_pop(g_mainL, 1);
-        }
 
-        g_has_exit_code = have_ec;
-        g_last_exit_code = ec;
-        {
-            char buf[80];
-            if (have_ec)
-                snprintf(buf, sizeof(buf), "--- Script finished (exit %d) ---", ec);
-            else
-                snprintf(buf, sizeof(buf), "--- Script finished ---");
-            console_add(buf, ImVec4(0.5f, 0.8f, 1.0f, 1.0f));
+            int n = (int)g_main_candidates.size();
+            if (n == 0) {
+                console_add("No main() found.",
+                            ImVec4(1.0f, 0.7f, 0.3f, 1.0f));
+                lua_settop(g_mainL, 0);
+                console_add("--- Script finished ---",
+                            ImVec4(0.5f, 0.8f, 1.0f, 1.0f));
+                g_dbg_state = DBG_IDLE;
+            } else if (n == 1) {
+                run_main_candidate(0);
+            } else {
+                console_add("Script completed. Select main() to run:",
+                            ImVec4(1.0f, 0.7f, 0.3f, 1.0f));
+                g_dbg_state = DBG_MAIN_SELECT;
+            }
         }
-
-        lua_settop(g_mainL, 0);
         return false;
     }
 
@@ -901,6 +969,7 @@ static bool dbg_tick() {
         console_add(lua_tostring(g_co, -1),
                     ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
         lua_pop(g_co, 1);
+        g_in_main_run = false;
         g_dbg_state = DBG_IDLE;
         lua_sethook(g_co, nullptr, 0, 0);
         return false;
@@ -959,6 +1028,7 @@ static void dbg_pause() {
 }
 
 static void dbg_stop() {
+    clear_main_candidates();
     g_dbg_state = DBG_IDLE;
     g_step_mode = STEP_NONE;
     /* Reset the coroutine by creating a new one */
@@ -1570,16 +1640,13 @@ static void draw_console() {
                           sizeof(g_console_input),
                           ImGuiInputTextFlags_EnterReturnsTrue)) {
         if (strlen(g_console_input) > 0) {
-            /* Echo to console */
             console_add(("> " + std::string(g_console_input)).c_str(),
                         ImVec4(0.5f, 0.9f, 0.5f, 1.0f));
-            /* Evaluate in debuggee context */
             dbg_eval(g_console_input);
             g_console_input[0] = '\0';
             reclaim_focus = true;
         }
     }
-    /* Reclaim focus after Enter — keep cursor in input box */
     if (reclaim_focus)
         ImGui::SetKeyboardFocusHere(-1);
     ImGui::PopItemWidth();
@@ -1996,6 +2063,42 @@ static void draw_controls_toolbar() {
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("Stop (Ctrl+F2)");
     if (!has_script) ImGui::EndDisabled();
+
+    /* ---- Main() selector (always visible, auto-runs on select) ---- */
+    ImGui::SameLine();
+    {
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        ImGui::GetWindowDrawList()->AddLine(
+            ImVec2(p.x + 2, p.y + 1),
+            ImVec2(p.x + 2, p.y + TOOLBAR_HEIGHT - 8),
+            IM_COL32(80, 80, 80, 255), 1.0f);
+        ImGui::SetCursorScreenPos(ImVec2(p.x + 8, p.y));
+    }
+
+    int n = (int)g_main_candidates.size();
+    float combo_w = ImGui::CalcTextSize("No main()").x + ImGui::GetStyle().FramePadding.x * 2 + 100;
+
+    if (n == 0) ImGui::BeginDisabled();
+    ImGui::PushItemWidth(combo_w);
+    const char *preview = (n > 0)
+        ? g_main_candidates[g_main_selected].class_name.c_str()
+        : "No main()";
+    if (ImGui::BeginCombo("##main_combo", preview)) {
+        for (int i = 0; i < n; i++) {
+            bool is_sel = (g_main_selected == i);
+            if (ImGui::Selectable(g_main_candidates[i].class_name.c_str(), is_sel)) {
+                if (g_dbg_state == DBG_MAIN_SELECT)
+                    run_main_candidate(i);
+                else
+                    g_main_selected = i;
+            }
+            if (is_sel)
+                ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::PopItemWidth();
+    if (n == 0) ImGui::EndDisabled();
 
     ImGui::End();
     ImGui::PopStyleColor();

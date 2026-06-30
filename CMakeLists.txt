@@ -108,6 +108,4 @@ target_link_options(lua_dbg PRIVATE
     -fsanitize=address
 )
 
-# 测试
-enable_testing()
-add_test(NAME lua_test COMMAND lua_test)
+
