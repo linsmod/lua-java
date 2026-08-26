@@ -7,6 +7,7 @@
 #include "lprefix.h"
 
 #include <stdio.h>
+#include <stdarg.h>
 #include <string.h>
 #include <math.h>
 
@@ -24,30 +25,65 @@ static int j_import_wildcard(lua_State *L);
  *  Console output  —  System.out.println / System.out.print
  * ================================================================ */
 
-/* Helper: write one value to stdout */
+/* Redirectable output writer: embedders (Android/GUI/...) can install
+ * a callback via java_setwriter() instead of relying on stdout. */
+static jlib_writer_t g_writer = NULL;
+static void *g_writer_ud = NULL;
+
+void java_setwriter(lua_State *L, jlib_writer_t w, void *ud) {
+  (void)L;
+  g_writer = w;
+  g_writer_ud = ud;
+}
+
+/* write raw bytes through the installed writer (fallback: stdout) */
+static void jlib_out(lua_State *L, const char *s, size_t len) {
+  if (len == 0) return;
+  if (g_writer != NULL)
+    g_writer(L, s, len, g_writer_ud);
+  else
+    fwrite(s, 1, len, stdout);
+}
+
+static void jlib_outf(lua_State *L, const char *fmt, ...) {
+  char buf[64];
+  va_list ap;
+  va_start(ap, fmt);
+  int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+  if (n > 0) jlib_out(L, buf, (size_t)n);
+}
+
+/* flush underlying stream when writing to stdout directly */
+static void jlib_outflush(void) {
+  if (g_writer == NULL) fflush(stdout);
+}
+
+/* Helper: write one value to the output sink */
 static void jlib_writeval(lua_State *L, int idx) {
   int t = lua_type(L, idx);
   switch (t) {
     case LUA_TNUMBER: {
       if (lua_isinteger(L, idx)) {
-        fprintf(stdout, LUA_INTEGER_FMT, lua_tointeger(L, idx));
+        jlib_outf(L, LUA_INTEGER_FMT, lua_tointeger(L, idx));
       } else {
         lua_Number v = lua_tonumber(L, idx);
-        fprintf(stdout, LUA_NUMBER_FMT, v);
+        jlib_outf(L, LUA_NUMBER_FMT, v);
       }
       break;
     }
     case LUA_TSTRING: {
       size_t len;
       const char *s = lua_tolstring(L, idx, &len);
-      fwrite(s, 1, len, stdout);
+      jlib_out(L, s, len);
       break;
     }
     case LUA_TBOOLEAN:
-      fputs(lua_toboolean(L, idx) ? "true" : "false", stdout);
+      jlib_out(L, lua_toboolean(L, idx) ? "true" : "false",
+               lua_toboolean(L, idx) ? 4 : 5);
       break;
     case LUA_TNIL:
-      fputs("null", stdout);
+      jlib_out(L, "null", 4);
       break;
     default: {
       /* fallback: use tostring */
@@ -56,7 +92,7 @@ static void jlib_writeval(lua_State *L, int idx) {
       lua_call(L, 1, 1);
       size_t len;
       const char *s = lua_tolstring(L, -1, &len);
-      fwrite(s, 1, len, stdout);
+      jlib_out(L, s, len);
       lua_pop(L, 1);
       break;
     }
@@ -68,11 +104,11 @@ static int j_sys_println(lua_State *L) {
   int n = lua_gettop(L);
   int i;
   for (i = 1; i <= n; i++) {
-    if (i > 1) printf("\t");
+    if (i > 1) jlib_out(L, "\t", 1);
     jlib_writeval(L, i);
   }
-  printf("\n");
-  fflush(stdout);
+  jlib_out(L, "\n", 1);
+  jlib_outflush();
   return 0;
 }
 
@@ -81,10 +117,10 @@ static int j_sys_print(lua_State *L) {
   int n = lua_gettop(L);
   int i;
   for (i = 1; i <= n; i++) {
-    if (i > 1) printf("\t");
+    if (i > 1) jlib_out(L, "\t", 1);
     jlib_writeval(L, i);
   }
-  fflush(stdout);
+  jlib_outflush();
   return 0;
 }
 
