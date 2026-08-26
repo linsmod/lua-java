@@ -2,3 +2,9 @@
 build/
 *.o
 *.a
+
+# IDE / 本地杂项
+codealike/
+imgui.ini
+bttout.txt
+compile_commands.json

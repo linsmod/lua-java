@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="12dp">
+
+    <TextView
+        android:id="@+id/title_view"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/app_name"
+        android:textStyle="bold"
+        android:textSize="15sp" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="Java 源码 (在 Lua 5.3 VM 上执行)"
+        android:textSize="13sp"
+        android:textColor="#555555" />
+
+    <EditText
+        android:id="@+id/source_edit"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="3"
+        android:layout_marginTop="4dp"
+        android:gravity="top|start"
+        android:fontFamily="monospace"
+        android:textSize="12sp"
+        android:inputType="textMultiLine|textNoSuggestions"
+        android:background="#F5F5F5"
+        android:padding="8dp"
+        android:scrollbars="vertical"
+        android:importantForAutofill="no" />
+
+    <HorizontalScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:scrollbars="none">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btn_hello"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="示例: Hello" />
+
+            <Button
+                android:id="@+id/btn_loop"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="示例: 循环" />
+
+            <Button
+                android:id="@+id/btn_collections"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="示例: 集合" />
+
+            <Button
+                android:id="@+id/btn_class"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="示例: 类与对象" />
+
+            <Button
+                android:id="@+id/run_button"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="▶ 编译并运行"
+                android:textStyle="bold" />
+        </LinearLayout>
+    </HorizontalScrollView>
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="运行输出"
+        android:textSize="13sp"
+        android:textColor="#555555" />
+
+    <ScrollView
+        android:id="@+id/output_scroll"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="2"
+        android:layout_marginTop="4dp"
+        android:background="#263238"
+        android:padding="8dp">
+
+        <TextView
+            android:id="@+id/output_view"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:textSize="12sp"
+            android:textColor="#B2FF59"
+            android:text="(点击 “编译并运行” 查看输出)" />
+    </ScrollView>
+
+</LinearLayout>

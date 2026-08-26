@@ -1,0 +1,25 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+captures/
+.cxx/
+.externalNativeBuild/
+
+# 本机相关配置 (SDK/NDK 路径, 每台机器不同)
+local.properties
+
+# 构建产物
+*.apk
+*.aab
+*.ap_
+*.dex
+output-metadata.json
+
+# Keystore (如需签名, 另行保管)
+*.jks
+*.keystore
