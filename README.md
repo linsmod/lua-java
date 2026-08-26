@@ -4,6 +4,8 @@ A compiler that translates Java source code (`.java`) directly into Lua 5.3.6 VM
 
 A graphical **ImGui-based Lua debugger** (breakpoints, step-over/into, variable inspection) is also included.
 
+Runs on **Linux desktop** and **Android** — see the [Android](#android) section below.
+
 ---
 
 ## Features
@@ -14,6 +16,7 @@ A graphical **ImGui-based Lua debugger** (breakpoints, step-over/into, variable 
 - **Java standard library in C** — `System.out.println`, `ArrayList<T>`, `HashMap<K,V>`, `StringBuilder`, `Math`, primitive wrappers (`Integer`, `Float`, `Boolean`), `String.valueOf`, etc.
 - **Graphical debugger** — ImGui + GLFW + OpenGL3 debugger with breakpoints, step-over/into, variable watch, and call-stack inspection.
 - **Embedded Lua 5.3.6** — full Lua language is also available side-by-side with Java compilation.
+- **Android support** — cross-compiles with the Android NDK into `liblua.so` / `liblua.a`, plus a ready-to-run Android demo app that edits and runs Java source on-device.
 
 ---
 
@@ -112,6 +115,36 @@ Load a Java or Lua file, set breakpoints, step through code, and inspect variabl
 
 ---
 
+## Android
+
+The library cross-compiles with the Android NDK (tested with NDK r29, minSdk 21) for `arm64-v8a`, `armeabi-v7a`, and `x86_64`.
+
+### Cross-compiling the library
+
+Windows (PowerShell):
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build_android.ps1
+```
+Linux (requires a Linux NDK installation):
+```bash
+NDK=/path/to/ndk ./scripts/build_android.sh
+```
+
+Artifacts are installed to `build/install/<ABI>/` (`liblua.so`, `liblua.a`, headers).
+
+### Android demo app
+
+`demo/android/` is a standalone Android Studio project that embeds the compiler:
+edit Java source in-app, tap “编译并运行”, and see the output — `System.out` is
+redirected via the `java_setwriter()` API. Open `demo/android` in Android Studio and run.
+
+![Android Demo](android-demo.jpg)
+
+See [demo/android/README.md](demo/android/README.md) for embedding details
+(host integration contract: `jlex_init` + `java_openlib` + `_MAIN_CANDIDATES`).
+
+---
+
 ## Supported Java Features
 
 | Category | Features |
@@ -155,11 +188,15 @@ lua+java/
 │   └── lauxlib.h               # (patched) luaL_loadjava macro
 ├── scripts/
 │   ├── tests/                  # Unit tests (01_basic_types.java ~ 24_array_index.java)
+│   ├── build_android.ps1       # Windows PowerShell cross-build script
+│   ├── build_android.sh        # Linux cross-build script
 │   └── test*.java              # Integration tests
 ├── demo/
 │   ├── ComprehensiveDemo.java  # Full-feature demo
 │   ├── DemoPerson.java         # Helper class (package: demo)
-│   └── DemoUtils.java          # Helper class (static methods, varargs)
+│   ├── DemoUtils.java          # Helper class (static methods, varargs)
+│   └── android/                # Android Studio demo app (JNI + embedded compiler)
+├── android/                    # CMake config for NDK cross-compilation
 ├── com/example/
 │   └── MathUtils.java          # Importable custom class
 └── third_party/imgui/          # ImGui library source
