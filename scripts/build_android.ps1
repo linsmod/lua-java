@@ -14,7 +14,7 @@ Set-Location $ProjectRoot
 
 $NDK = if ($env:NDK) { $env:NDK } else { "H:\AndroidSdk\Sdk\ndk\29.0.13113456" }
 $Platform = if ($env:ANDROID_PLATFORM) { $env:ANDROID_PLATFORM } else { "android-21" }
-$ABIs = if ($env:ABI) { @($env:ABI) } else { @("arm64-v8a", "armeabi-v7a", "x86_64") }
+$ABIs = if ($env:ABI) { $env:ABI -split '\s+' | Where-Object { $_ } } else { @("arm64-v8a", "armeabi-v7a", "x86_64") }
 
 $Toolchain = Join-Path $NDK "build\cmake\android.toolchain.cmake"
 if (-not (Test-Path $Toolchain)) {

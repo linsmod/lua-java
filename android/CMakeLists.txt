@@ -46,6 +46,8 @@ add_library(lua_shared SHARED ${LUA_FULL_SOURCES})
 set(LUA_PUBLIC_DEFINES
     -DLUA_COMPAT_5_2
     -DLUA_USE_LINUX
+    # 注意: 不要定义 _FILE_OFFSET_BITS=64 —— Bionic 在该模式下要求 API 24
+    # 才声明 fseeko/ftello; 保持 32 位 off_t 时这两个函数无条件可用 (API 21+)
 )
 set(LUA_PUBLIC_FLAGS -Wall -Wextra -O2)
 
