@@ -201,7 +201,12 @@
 #else			/* }{ */
 
 /* This defines DEB_HOST_MULTIARCH */
+#if defined(__ANDROID__)
+/* Debian 补丁的 lua5.3-deb-multiarch.h 在 Android 上不存在, 直接兼容 */
+#define DEB_HOST_MULTIARCH "android"
+#else
 #include "lua5.3-deb-multiarch.h"
+#endif
 
 #define LUA_ROOT	"/usr/local/"
 #define LUA_ROOT2	"/usr/"

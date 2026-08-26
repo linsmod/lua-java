@@ -1543,7 +1543,7 @@ static int method_definition(JLexState *ls, FuncState *fs, int class_reg,
       ls->fs->freereg = reg;
     }
     skip_semicolon(ls);
-    return;
+    return 0; /* field declaration, not a constructor */
   }
 
   /* create nested FuncState */
